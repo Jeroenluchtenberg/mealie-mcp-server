@@ -1,5 +1,7 @@
 import json
 import logging
+from collections.abc import Callable
+from http.cookiejar import CookieJar
 from typing import Any, Dict
 
 import httpx
@@ -17,13 +19,30 @@ class MealieApiError(Exception):
         super().__init__(f"{message} (Status Code: {status_code})")
 
 
-class MealieClient:
+class _NoCookies(CookieJar):
+    """Cookie jar that stores nothing, so no session state leaks between users."""
 
-    def __init__(self, base_url: str, api_key: str):
+    def set_cookie(self, cookie) -> None:
+        pass
+
+    def extract_cookies(self, response, request) -> None:
+        pass
+
+
+class MealieClient:
+    """Shared Mealie connection that authenticates each request separately.
+
+    ``credentials`` returns the API token for the user behind the current
+    request. If it also has an ``invalidate()`` method, that is called when
+    Mealie rejects the token, so a cached token is re-read on the next request.
+    """
+
+    def __init__(self, base_url: str, credentials: Callable[[], str]):
         if not base_url:
             raise ValueError("Base URL cannot be empty")
-        if not api_key:
-            raise ValueError("API key cannot be empty")
+        if not callable(credentials):
+            raise ValueError("Credentials provider must be callable")
+        self._credentials = credentials
 
         # Third-party debug/info logs include request URLs and connection details.
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -31,10 +50,11 @@ class MealieClient:
         logger.debug({"operation": "Initializing Mealie client"})
         self._client = httpx.Client(
             base_url=base_url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            cookies=_NoCookies(),
             timeout=30.0,
         )
         try:
+            # The about endpoint is public, so the health check needs no user token.
             response = self._client.get("/api/app/about")
             response.raise_for_status()
         except BaseException as error:
@@ -68,13 +88,14 @@ class MealieClient:
         - Multipart uploads via files= parameter
         - Form data via data= parameter
         """
+        # Leave multipart boundaries to httpx and do not mutate caller headers.
+        headers = httpx.Headers(kwargs.get("headers"))
+        headers["Authorization"] = f"Bearer {self._credentials()}"
+        if "json" in kwargs and "files" not in kwargs:
+            headers["Content-Type"] = "application/json"
+        kwargs["headers"] = headers
         try:
             logger.debug({"operation": "Making Mealie API request"})
-            # Leave multipart boundaries to httpx and do not mutate caller headers.
-            if "json" in kwargs and "files" not in kwargs:
-                headers = httpx.Headers(kwargs.get("headers"))
-                headers["Content-Type"] = "application/json"
-                kwargs["headers"] = headers
 
             response = self._client.request(method, url, **kwargs)
             response.raise_for_status()  # Raise an exception for 4XX/5XX responses
@@ -101,6 +122,10 @@ class MealieClient:
 
         except httpx.HTTPStatusError as error:
             self._log_failure("Requesting Mealie API", error)
+            if error.response.status_code == 401:
+                invalidate = getattr(self._credentials, "invalidate", None)
+                if callable(invalidate):
+                    invalidate()
             raise MealieApiError(
                 error.response.status_code,
                 "Mealie API request failed",

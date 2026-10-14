@@ -3,15 +3,15 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/rldiao-mealie-mcp-server-badge.png)](https://mseep.ai/app/rldiao-mealie-mcp-server)
 
 A Model Context Protocol (MCP) server that connects AI assistants to your
-[Mealie](https://github.com/mealie-recipes/mealie) recipe database through clients
-such as Claude Desktop.
+[Mealie](https://github.com/mealie-recipes/mealie) recipe database. One
+deployment serves many people, and each tool call runs with the calling user's
+own Mealie credentials.
 
 ## Contents
 
 - [Features](#features)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
-- [Remote Access](#remote-access)
 - [Docker](#docker)
 - [Usage Examples](#usage-examples)
 - [Available Tools](#available-tools)
@@ -38,89 +38,108 @@ such as Claude Desktop.
 
 ## Quick Start
 
+The server is built for a shared deployment. It runs over HTTP behind an MCP
+gateway that authenticates each person. Every tool call then runs as that
+person in Mealie, with their own household and permissions. No Mealie token is
+shared between users.
+
+```text
+MCP client ──OAuth──▶ gateway (validates JWT, sets X-User) ──▶ mealie-mcp ──▶ Mealie
+                                                                  │
+                                         Authentik API (user attribute mealie_token)
+```
+
 ### Prerequisites
 
-- Python 3.12+
-- A running Mealie instance and an API key from your account settings
-- Package manager [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/getting-started/installation/),
+  or Docker
+- A running Mealie instance
+- Authentik as the identity provider, and an MCP gateway such as
+  [agentgateway](https://agentgateway.dev) that validates Authentik tokens
 
-### Installation
+### How a Request Is Authorized
 
-#### Option 1: Using the MCP SDK CLI (Recommended)
+1. The gateway validates the user's Authentik JWT. It writes a verified claim
+   (`preferred_username`) into the `X-User` header and overwrites any
+   client-supplied value.
+2. The server reads `X-User` on each tool call. It looks up that Authentik user
+   and reads the Mealie API token from the user attribute `mealie_token`, using
+   a read-only service account.
+3. The token is cached per user for `MEALIE_TOKEN_CACHE_TTL` seconds (default
+   120). Deactivating the user or removing the attribute takes effect after at
+   most that long. If Mealie rejects a token with HTTP 401, the cached copy is
+   dropped right away.
+4. The tool calls Mealie with that user's token.
 
-Clone the repository, then install the server into Claude Desktop with the
-`mcp` command supplied by the Python MCP SDK (no standalone `fastmcp` package
-is needed):
+Tool calls fail with a clear message when no user header is present, when no
+token is linked ("No Mealie token linked to your account; ask the admin to set
+it up."), or when Mealie rejects the token (401) or the action (403).
 
-```bash
-git clone https://github.com/rldiao/mealie-mcp-server.git
-cd mealie-mcp-server
-uv sync --locked
-uv run mcp install src/server.py --with-editable . \
-  --env-var MEALIE_BASE_URL=https://your-mealie-instance.com \
-  --env-var MEALIE_API_KEY=your-mealie-api-key
+Because the server trusts `X-User`, it must be reachable **only** through the
+gateway. Run it on an internal network with no published port. Anyone who can
+reach it directly can act as any user.
+
+### Onboarding a User
+
+1. In Mealie, create an API token for the user. As an admin, use impersonation,
+   or have the user create one under their profile.
+2. In Authentik, open the user and add the token to their attributes:
+
+   ```yaml
+   mealie_token: <the user's Mealie API token>
+   ```
+
+3. Grant the Authentik service account read access to users. A dedicated
+   service account with only the "Can view User" permission is enough. Use its
+   API token as `AUTHENTIK_TOKEN`.
+
+### Gateway Configuration (agentgateway)
+
+Validate Authentik tokens with `mcpAuthentication`, then overwrite `X-User` with
+the verified claim. agentgateway's `set` replaces any client-supplied value. If
+the claim is missing, the expression fails and agentgateway removes the header,
+so a client cannot forge it.
+
+```yaml
+policies:
+  mcpAuthentication:
+    issuer: https://auth.example.com/application/o/mealie-mcp/
+    audiences: [<authentik client id>]
+    jwks:
+      url: https://auth.example.com/application/o/mealie-mcp/jwks/
+    # resourceMetadata: ... as required by your MCP clients
+  transformations:
+    request:
+      set:
+        x-user: jwt.preferred_username
 ```
-
-#### Option 2: Using uvx
-
-Add this to your MCP client's configuration to run directly from GitHub without
-cloning (in Claude Desktop, use `claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "mealie-mcp-server": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/rldiao/mealie-mcp-server",
-        "mealie-mcp-server"
-      ],
-      "env": {
-        "MEALIE_BASE_URL": "https://your-mealie-instance.com",
-        "MEALIE_API_KEY": "your-mealie-api-key"
-      }
-    }
-  }
-}
-```
-
-Restart Claude Desktop to load the server.
 
 ## Configuration
 
-Set environment variables in your MCP client configuration or shell. For a local
-checkout, you can also copy [`.env.template`](.env.template) to `.env` and fill in
-your instance details. Never commit your API key.
+Set environment variables in the container or shell. For a local checkout, you
+can also copy [`.env.template`](.env.template) to `.env`. Never commit tokens.
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MEALIE_BASE_URL` | Required | Mealie base URL, including protocol and port if needed |
-| `MEALIE_API_KEY` | Required | API key from your Mealie account settings |
+| `AUTHENTIK_URL` | Required | Authentik base URL, e.g. `https://auth.example.com` |
+| `AUTHENTIK_TOKEN` | Required | API token of a read-only Authentik service account |
+| `AUTHENTIK_TOKEN_ATTRIBUTE` | `mealie_token` | User attribute that holds the Mealie API token |
+| `MCP_USER_HEADER` | `X-User` | Header the gateway fills with the verified username |
+| `MEALIE_TOKEN_CACHE_TTL` | `120` | Seconds to cache a user's token, from 0 to 3600 |
 | `MEALIE_ENABLE_AI_IMPORT` | `false` | Opt in to AI recipe import; accepts `true`/`false` (case-insensitive) |
-| `MCP_TRANSPORT` | `stdio` | `stdio`, `streamable-http`, or legacy `sse` |
+| `MCP_TRANSPORT` | `streamable-http` | `streamable-http` or legacy `sse` |
 | `MCP_HOST` | `127.0.0.1` | HTTP bind address; use `0.0.0.0` in containers |
 | `MCP_PORT` | `8765` | HTTP port, from 1 to 65535 |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
 
-## Remote Access
+`MEALIE_API_KEY` is no longer supported. Startup fails while it is set, so a
+shared token cannot stay in use by mistake. The stdio transport is not supported
+either, because it carries no per-user identity.
 
-The default stdio transport is for local clients. To serve HTTP clients, configure
-your Mealie credentials as described above and run from the checkout:
-
-```bash
-export MCP_TRANSPORT=streamable-http
-export MCP_HOST=127.0.0.1
-export MCP_PORT=8765
-uv run mealie-mcp-server
-```
-
-The server will expose its MCP endpoint at `http://<host>:<port>/mcp`.
-
-**Security:** HTTP transports have no built-in authentication. Anyone who can
-reach the endpoint can use the configured Mealie credentials through its tools.
-Keep it on a trusted interface; for remote access, use a reverse proxy that
-enforces authentication and HTTPS.
+At startup, the server checks that Mealie is healthy and that Authentik accepts
+the service-account token. It exits if either check fails. The MCP endpoint is
+`http://<host>:<port>/mcp`.
 
 ## Docker
 
@@ -145,50 +164,38 @@ it locally.
 docker build -t mealie-mcp-server .
 ```
 
-### Standalone
-
-```bash
-docker run -d \
-  --name mealie-mcp \
-  -e MEALIE_BASE_URL=http://your-mealie-host:9000 \
-  -e MEALIE_API_KEY=your-mealie-api-key \
-  -e MCP_TRANSPORT=streamable-http \
-  -e MCP_HOST=0.0.0.0 \
-  -e MCP_PORT=8765 \
-  -p 127.0.0.1:8765:8765 \
-  mealie-mcp-server
-```
-
-The port is published only on the host's loopback interface. See
-[Remote Access](#remote-access) before making it reachable remotely.
-
 ### Docker Compose
 
-Add this service to the Compose file that runs Mealie. The example assumes that
-the Mealie service is named `mealie` and both services use a network named
-`mealie_net`, defined in that Compose file. Set `MEALIE_API_KEY` in the shell or
-Compose `.env` file.
+Put the server on an internal network shared only with the gateway and Mealie.
+Do not publish its port. Set `AUTHENTIK_TOKEN` in the shell or the Compose `.env`
+file.
 
 ```yaml
 services:
   mealie-mcp:
-    build: .
+    image: ghcr.io/jeroenluchtenberg/mealie-mcp-server:latest
     container_name: mealie-mcp
     restart: unless-stopped
     environment:
       MEALIE_BASE_URL: http://mealie:9000
-      MEALIE_API_KEY: ${MEALIE_API_KEY}
-      MCP_TRANSPORT: streamable-http
+      AUTHENTIK_URL: https://auth.example.com
+      AUTHENTIK_TOKEN: ${AUTHENTIK_TOKEN}
       MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8765"
     expose:
       - "8765"
     networks:
-      - mealie_net
+      - mcp_internal
+
+networks:
+  mcp_internal:
+    internal: true
 ```
 
-`expose` does not publish a host port. Connect a reverse proxy on the same network
-for remote access, following the [HTTP security guidance](#remote-access).
+`expose` does not publish a host port. Attach the gateway (and Mealie, or a
+route to it) to `mcp_internal`, and point the gateway's MCP target at
+`http://mealie-mcp:8765/mcp`. An `internal: true` network has no outbound
+access. If Authentik is reachable only through another network, attach the
+server to that network as well, but never publish its port.
 
 ## Usage Examples
 
@@ -331,14 +338,14 @@ scraping, and file uploads also perform different operations.
 
 ### Optional AI recipe import
 
-Set `MEALIE_ENABLE_AI_IMPORT=true` in your MCP client's environment, shell, or
-local `.env`. Restart the server and refresh the client's tool list. This applies
-to stdio, SSE, and Streamable HTTP. Offline SDK discovery remains configuration-
+Set `MEALIE_ENABLE_AI_IMPORT=true` in the server's environment or local `.env`.
+Restart the server and refresh the client's tool list. This applies to SSE and
+Streamable HTTP. Offline SDK discovery remains configuration-
 and network-free, listing only default tools; optional registration occurs at
 runtime startup (or when passing an explicit enabled `ServerConfig`).
 
 `import_recipe_with_ai` requires **Mealie 3.23.0+** and a default AI provider
-configured for the API user's group. It accepts any combination of:
+configured for the calling user's group. It accepts any combination of:
 
 - `content`: plain text, raw HTML, or JSON; also used for corrections or notes.
 - `url`: an HTTP(S) recipe or video URL, fetched by Mealie and saved as the source.
@@ -384,24 +391,26 @@ and [usage examples](USAGE_EXAMPLES.md#optional-ai-import).
 
 ### Setup
 
-After [cloning the repository](#installation), install development dependencies:
+Clone the repository and install development dependencies:
 
 ```bash
+git clone https://github.com/Jeroenluchtenberg/mealie-mcp-server.git
+cd mealie-mcp-server
 uv sync --locked --extra dev
 ```
 
-For manual testing, configure your Mealie instance:
+For manual testing against a real instance, fill in `.env` and start the server:
 
 ```bash
 cp .env.template .env
-# Edit .env with your Mealie instance details
+# Edit .env with your Mealie and Authentik details
+uv run mealie-mcp-server
 ```
 
-Launch the MCP Inspector:
-
-```bash
-uv run mcp dev src/server.py
-```
+Connect the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+to `http://127.0.0.1:8765/mcp` with Streamable HTTP and add an `X-User` header
+for a user that has a linked token. Only do this on a loopback address: without
+the gateway, the header is not verified.
 
 Run the offline checks; these do not require a Mealie instance or credentials:
 
@@ -418,6 +427,7 @@ uv run pytest -q
 | [`src/tools/`](src/tools/) | FastMCP tool definitions and registration |
 | [`src/models/`](src/models/) | Pydantic request and response models |
 | [`src/server.py`](src/server.py) | Configuration, lifecycle, and entry point |
+| [`src/identity.py`](src/identity.py) | Per-request user identity and Authentik token lookup |
 | [`src/prompts.py`](src/prompts.py) | MCP prompts |
 | [`tests/`](tests/) | Offline tests and fixtures |
 

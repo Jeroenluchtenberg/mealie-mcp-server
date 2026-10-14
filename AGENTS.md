@@ -28,10 +28,14 @@
 
 - Never log API keys, request bodies, response bodies, recipe content, user data,
   or shopping-list content.
-- Logging for stdio transport must go to stderr. Do not add an unconditional file
-  logger or write protocol-adjacent output to stdout.
-- Startup must fail on unsuccessful Mealie health checks; always call
-  `raise_for_status()`.
+- Logging must go to stderr. Do not add an unconditional file logger or write
+  protocol-adjacent output to stdout.
+- Every Mealie call runs with the calling user's token, which is resolved per
+  request from the gateway-set user header via Authentik
+  ([`src/identity.py`](src/identity.py)). Never reintroduce a shared Mealie API
+  key, and never log usernames or tokens.
+- Startup must fail on unsuccessful Mealie health or Authentik access checks;
+  always call `raise_for_status()`.
 - Close the HTTP client during shutdown.
 - Keep MCP tool names and prompt references synchronized.
 - Preserve Mealie field casing at the API boundary, such as `recipeId`,

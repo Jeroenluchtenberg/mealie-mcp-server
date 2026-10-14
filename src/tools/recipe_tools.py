@@ -23,14 +23,91 @@ from models.recipe import (
 from tools.errors import tool_error_boundary
 
 
+_DECIMAL_COMMA = re.compile(r"(?<=\d),(?=\d)")
+
+
+def _normalize_ingredient_line(line: str) -> str:
+    """Rewrite decimal commas ("0,25 tl") so Mealie's parser reads the quantity."""
+    return _DECIMAL_COMMA.sub(".", line.strip())
+
+
+def _known_ref(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Keep a parsed unit/food only when it links to an existing Mealie record."""
+    if not value or not value.get("id"):
+        return None
+    return {"id": value["id"], "name": value.get("name")}
+
+
+def _parse_string_ingredients(
+    mealie: MealieFetcher,
+    ingredients: Optional[List[Union[str, RecipeIngredientInput]]],
+) -> tuple[
+    Optional[List[Union[str, Dict[str, Any], RecipeIngredientInput]]],
+    List[Dict[str, Any]],
+]:
+    """Resolve plain-string ingredients through Mealie's parser in one request.
+
+    Mealie stores a string ingredient as a bare note, so strings are parsed
+    here and turned into structured ingredients linked to existing units and
+    foods. Text the parser could not link to an existing record is kept in the
+    note and reported back, so the caller can resolve it. Structured
+    ingredients pass through unchanged.
+    """
+    positions = [
+        index
+        for index, ingredient in enumerate(ingredients or [])
+        if isinstance(ingredient, str) and ingredient.strip()
+    ]
+    if not positions:
+        return ingredients, []
+    resolved: List[Union[str, Dict[str, Any], RecipeIngredientInput]] = list(
+        ingredients
+    )
+    lines = [_normalize_ingredient_line(ingredients[index]) for index in positions]
+    parsed = mealie.parse_ingredients(lines)
+    if not isinstance(parsed, list) or len(parsed) != len(lines):
+        raise ValueError("Mealie returned an unexpected ingredient parse result")
+    unmatched = []
+    for index, result in zip(positions, parsed):
+        original = ingredients[index]
+        ingredient = (result or {}).get("ingredient") or {}
+        unit = _known_ref(ingredient.get("unit"))
+        food = _known_ref(ingredient.get("food"))
+        unit_text = None if unit else (ingredient.get("unit") or {}).get("name")
+        food_text = None if food else (ingredient.get("food") or {}).get("name")
+        note_parts = [unit_text, food_text, ingredient.get("note")]
+        entry: Dict[str, Any] = {"originalText": original}
+        quantity = ingredient.get("quantity")
+        if isinstance(quantity, (int, float)) and math.isfinite(quantity):
+            entry["quantity"] = quantity
+        if unit:
+            entry["unit"] = unit
+        if food:
+            entry["food"] = food
+        note = " ".join(part.strip() for part in note_parts if part and part.strip())
+        if note:
+            entry["note"] = note
+        resolved[index] = entry
+        if not food or unit_text:
+            unmatched.append(
+                {
+                    "index": index,
+                    "input": original,
+                    "food": food_text,
+                    "unit": unit_text,
+                }
+            )
+    return resolved, unmatched
+
+
 def _build_ingredient(
     ingredient: Union[str, RecipeIngredientInput, Dict[str, Any]],
 ) -> RecipeIngredient:
     """Coerce a flat string or structured ingredient into a RecipeIngredient.
 
-    A plain string becomes a note for Mealie's natural-language parser to
-    resolve; a structured object maps its fields straight onto the Mealie
-    RecipeIngredient model.
+    Strings are normally resolved by _parse_string_ingredients first; a string
+    reaching this point is stored as a note. A structured object maps its
+    fields straight onto the Mealie RecipeIngredient model.
     """
     if isinstance(ingredient, str):
         return RecipeIngredient(note=ingredient)
@@ -163,6 +240,22 @@ def _recipe_changes(
     return changes
 
 
+def _parsed_recipe_changes(
+    mealie: MealieFetcher, **arguments: Any
+) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Validate all content first, then resolve ingredient strings.
+
+    Invalid input fails before the parse request, so it never reaches Mealie.
+    """
+    changes = _recipe_changes(**arguments)
+    ingredients, unmatched = _parse_string_ingredients(
+        mealie, arguments.get("ingredients")
+    )
+    if ingredients is not arguments.get("ingredients"):
+        changes = _recipe_changes(**{**arguments, "ingredients": ingredients})
+    return changes, unmatched
+
+
 def _compose_recipe(
     current: Dict[str, Any], changes: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -219,6 +312,15 @@ def _create_populated_recipe(
         with _created_recipe_stage(slug, "fetch_image"):
             updated = mealie.get_recipe(slug)
     return updated
+
+
+def _with_unmatched(
+    recipe: Dict[str, Any], unmatched: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Report ingredient lines the parser could not link to an existing food."""
+    if unmatched and isinstance(recipe, dict):
+        return {**recipe, "unmatched_ingredients": unmatched}
+    return recipe
 
 
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -341,6 +443,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
     @mcp.tool()
     def create_recipe(
         name: str,
+        instructions: List[Union[str, RecipeInstructionInput]],
         description: Optional[str] = None,
         org_url: Optional[str] = None,
         total_time: Optional[str] = None,
@@ -351,7 +454,6 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         servings: Optional[float] = None,
         image_url: Optional[str] = None,
         ingredients: Optional[List[Union[str, RecipeIngredientInput]]] = None,
-        instructions: Optional[List[Union[str, RecipeInstructionInput]]] = None,
         tags: Optional[List[OrganizerRef]] = None,
         tools: Optional[List[OrganizerRef]] = None,
         nutrition: Optional[RecipeNutrition] = None,
@@ -360,16 +462,22 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         """Create a recipe and populate all of its content in one call.
 
         Use when the recipe is already composed into ingredients and instructions.
-        Only name is required. Provide ingredients and instructions for a basic
-        recipe, or include metadata, nutrition, and display settings for a
-        complete recipe. Omitted or null fields keep Mealie's defaults; empty
-        lists clear those fields. An image_url is scraped after content is saved.
+        name and instructions are required; pass instructions=[] for a recipe
+        that intentionally has no steps (Mealie's placeholder step is always
+        replaced). At least one ingredient or instruction must be given. Include
+        metadata, nutrition, and display settings for a complete recipe.
+        Omitted or null fields keep Mealie's defaults. An image_url is scraped
+        after content is saved.
 
         Ingredients and instructions each accept either a plain string or a
         structured object:
 
         - An ingredient string (e.g. "200 g basmati rice") is resolved by
-          Mealie's natural-language parser into quantity/unit/food.
+          Mealie's ingredient parser into quantity and an existing unit and
+          food. Decimal commas ("0,25 tl") are read as decimal points. When no
+          existing food matches, quantity and unit are kept and the unmatched
+          text goes into the note; such lines are listed in
+          unmatched_ingredients.
         - An ingredient object can set quantity, note, title, an existing
           Mealie unit/food (by id and name), and a referenceId for step links.
         - An instruction string is the step text; an instruction object can
@@ -388,8 +496,9 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             recipe_yield: Yield as free text, e.g. "4 Portionen".
             servings: Number of servings (numeric).
             image_url: URL of an image to scrape and set as the recipe image.
+            instructions: Instruction strings and/or structured instruction
+                objects; [] means the recipe intentionally has no steps.
             ingredients: Ingredient strings and/or structured ingredient objects.
-            instructions: Instruction strings and/or structured instruction objects.
             tags: Existing Mealie tags (id+name) to assign; look up with get_tags.
             tools: Existing Mealie tools (id+name) to assign; look up with get_tools.
             nutrition: Per-serving nutrition values (calories in kcal, sodium and
@@ -400,13 +509,23 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 you know you are about to attach a file.
 
         Returns:
-            Dict[str, Any]: The created recipe details.
+            Dict[str, Any]: The created recipe details. When some ingredient
+            strings did not match an existing food (or unit), the result also has
+            unmatched_ingredients: a list of {index, input, food, unit} giving the
+            ingredient position, the original line, and the unmatched text.
+            Resolve them with get_foods/create_food and update_recipe.
 
         If a later API step fails, the error includes created_slug and stage.
         Inspect that recipe and resume the failed step instead of creating again.
         """
         with tool_error_boundary("Error creating recipe"):
-            changes = _recipe_changes(
+            _require_text(name, "Recipe name")
+            if image_url is not None:
+                _require_text(image_url, "Image URL")
+            if not ingredients and not instructions:
+                raise ValueError("Provide at least one ingredient or instruction")
+            changes, unmatched = _parsed_recipe_changes(
+                mealie,
                 description=description,
                 org_url=org_url,
                 total_time=total_time,
@@ -422,7 +541,9 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 nutrition=nutrition,
                 settings=settings,
             )
-            return _create_populated_recipe(mealie, name, changes, image_url)
+            return _with_unmatched(
+                _create_populated_recipe(mealie, name, changes, image_url), unmatched
+            )
 
     @mcp.tool()
     def update_recipe(
@@ -473,15 +594,19 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 current settings are read first and merged, because Mealie does
                 not reliably preserve toggles left out of a settings PATCH.
             ingredients: Ingredient strings and/or structured objects, as in
-                create_recipe. Replaces the ingredient list when provided.
+                create_recipe (strings are parsed the same way). Replaces the
+                ingredient list when provided.
             instructions: Step strings and/or structured objects, as in
                 create_recipe. Replaces the instruction list when provided.
 
         Returns:
-            Dict[str, Any]: The updated recipe details.
+            Dict[str, Any]: The updated recipe details, plus
+            unmatched_ingredients as in create_recipe when some ingredient
+            strings did not match an existing food or unit.
         """
         with tool_error_boundary("Error updating recipe"):
-            recipe_data = _recipe_changes(
+            recipe_data, unmatched = _parsed_recipe_changes(
+                mealie,
                 name=name,
                 description=description,
                 recipe_yield=recipe_yield,
@@ -502,8 +627,9 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 raise ValueError("At least one field must be provided to update")
             if ingredients is not None or instructions is not None:
                 current = mealie.get_recipe(slug)
-                return mealie.update_recipe(
-                    slug, _compose_recipe(current, recipe_data)
+                return _with_unmatched(
+                    mealie.update_recipe(slug, _compose_recipe(current, recipe_data)),
+                    unmatched,
                 )
             if settings is not None:
                 # Mealie drops some toggles omitted from a settings PATCH, so

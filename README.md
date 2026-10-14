@@ -482,15 +482,36 @@ parse_ingredients(ingredients=["1/4 cup chopped onion", "2 large eggs"])
 #      "food": {"id": "...", "name": "onion"}, "note": "chopped"}, ...]
 ```
 
-A `null` unit or food means your instance has no matching entry; create one
-with `create_food` / `create_unit`, or leave the text in the note. Pass
-`verbose=True` for Mealie's full response including per-field confidences.
+A `null` unit means your instance has no matching unit. When the parser finds
+no food, `parse_ingredients` compares the food text with every existing food
+name, plural, and alias (one food-list request per call, no writes). An exact
+match is linked directly and marked `"resolved": "auto"`. Anything else keeps
+`food.id` null and gets a `suggestion` in the same shape `resolve_ingredients`
+returns:
+
+```python
+parse_ingredients(ingredients=["zout naar smaak"])
+# -> [{..., "food": {"id": null, "name": "zout naar smaak"},
+#      "suggestion": {"text": "zout naar smaak", "status": "suggested",
+#                     "candidates": [...],
+#                     "suggestion": {"action": "use_with_note",
+#                                    "food": {"id": "...", "name": "zout"},
+#                                    "note": "naar smaak"}}}]
+```
+
+Suggestions are never applied automatically: a word-level match can be a
+different ingredient (`zoete aardappel` is not `aardappel`). Confirm them, then
+link the food or apply the alias/create decision with `resolve_ingredients`.
+Pass `verbose=True` for Mealie's full response including per-field confidences,
+plus the suggestion.
 
 `create_recipe` and `update_recipe` run plain ingredient strings through the
 same parser. Decimal commas such as `0,25 tl` are read as `0.25`. When a line
 has no matching food, its quantity and unit are kept and the food text goes
 into the note. Such lines are listed in `unmatched_ingredients` in the result
-so they can be resolved and written back with `update_recipe`.
+so they can be resolved and written back with `update_recipe`. To review
+suggested foods before saving, run the lines through `parse_ingredients` first
+and pass the confirmed results as structured ingredients.
 
 ### Resolving Unmatched Foods Without Duplicates
 

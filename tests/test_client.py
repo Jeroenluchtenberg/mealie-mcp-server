@@ -8,6 +8,9 @@ import pytest
 
 from mealie.client import MealieApiError, MealieClient
 
+# The fixture patches httpx.Client; keep the real class for building clients here.
+RealClient = httpx.Client
+
 
 @pytest.fixture
 def make_client(monkeypatch, request):
@@ -38,15 +41,72 @@ def make_client(monkeypatch, request):
     return make
 
 
-def test_initialization_sets_authentication_and_timeout(make_client):
+def test_initialization_checks_health_without_user_credentials(make_client):
     _, factory, requests = make_client()
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
-    assert factory.call_args.kwargs["headers"] == {
-        "Authorization": "Bearer synthetic-key"
-    }
+    credentials = Mock(return_value="synthetic-key")
+    client = MealieClient("https://private-host.invalid", credentials)
+    assert "headers" not in factory.call_args.kwargs
     assert factory.call_args.kwargs["timeout"] == 30.0
     assert requests[0].url.path == "/api/app/about"
+    assert "authorization" not in requests[0].headers
+    credentials.assert_not_called()
     client.close()
+
+
+def test_each_request_uses_the_current_credentials(make_client):
+    _, _, requests = make_client()
+    tokens = iter(["first-token", "second-token"])
+    client = MealieClient("https://private-host.invalid", lambda: next(tokens))
+    client._handle_request("GET", "/api/items")
+    client._handle_request("GET", "/api/items")
+    assert [r.headers["authorization"] for r in requests[1:]] == [
+        "Bearer first-token",
+        "Bearer second-token",
+    ]
+
+
+def test_credential_failures_stop_before_the_request(make_client):
+    from identity import CredentialError
+
+    _, _, requests = make_client()
+
+    def missing():
+        raise CredentialError("No Mealie token linked to your account")
+
+    client = MealieClient("https://private-host.invalid", missing)
+    with pytest.raises(CredentialError):
+        client._handle_request("GET", "/api/items")
+    assert [r.url.path for r in requests] == ["/api/app/about"]
+
+
+@pytest.mark.parametrize("status,invalidated", [(401, True), (403, False), (500, False)])
+def test_rejected_tokens_are_invalidated(make_client, status, invalidated):
+    make_client(response=httpx.Response(status))
+    credentials = Mock(return_value="synthetic-key")
+    client = MealieClient("https://private-host.invalid", credentials)
+    with pytest.raises(MealieApiError) as caught:
+        client._handle_request("GET", "/api/items")
+    assert caught.value.status_code == status
+    assert credentials.invalidate.called is invalidated
+
+
+def test_response_cookies_are_not_shared_between_requests(make_client):
+    _, factory, _ = make_client()
+    MealieClient("https://private-host.invalid", lambda: "synthetic-key")
+    sent = []
+
+    def respond(api_request):
+        sent.append(api_request)
+        return httpx.Response(200, json={}, headers={"Set-Cookie": "session=user-a"})
+
+    with RealClient(
+        base_url="https://private-host.invalid",
+        cookies=factory.call_args.kwargs["cookies"],
+        transport=httpx.MockTransport(respond),
+    ) as http_client:
+        http_client.get("/api/items")
+        http_client.get("/api/items")
+    assert "cookie" not in sent[-1].headers
 
 
 @pytest.mark.parametrize("payload", [{"detail": "private-response"}, "private-response"])
@@ -58,7 +118,7 @@ def test_http_errors_never_log_content_or_include_it_in_message(make_client, cap
     )
     make_client(response=response)
     with caplog.at_level(logging.DEBUG):
-        client = MealieClient("https://private-host.invalid", "synthetic-key")
+        client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
         with pytest.raises(MealieApiError) as caught:
             client._handle_request(
                 "POST",
@@ -85,7 +145,7 @@ def test_http_errors_never_log_content_or_include_it_in_message(make_client, cap
 )
 def test_all_timeouts_are_normalized(make_client, caplog, error_type):
     make_client(failure=error_type("private-transport-message"))
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     with pytest.raises(TimeoutError, match="Mealie API request timed out") as caught:
         client._handle_request("GET", "/api/private-path")
     assert caught.value.__suppress_context__
@@ -96,7 +156,7 @@ def test_all_timeouts_are_normalized(make_client, caplog, error_type):
 @pytest.mark.parametrize("error_type", [httpx.ConnectError, httpx.RemoteProtocolError])
 def test_request_failures_are_normalized(make_client, caplog, error_type):
     make_client(failure=error_type("private-transport-message"))
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     with pytest.raises(ConnectionError, match="Could not communicate"):
         client._handle_request("GET", "/api/private-path")
     assert "private-transport-message" not in caplog.text
@@ -114,7 +174,7 @@ def test_request_failures_are_normalized(make_client, caplog, error_type):
 def test_failed_health_checks_close_client(make_client, caplog, failure, expected):
     http_client, _, _ = make_client(health_failure=failure)
     with pytest.raises(expected):
-        MealieClient("https://private-host.invalid", "synthetic-key")
+        MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     assert http_client.is_closed
     assert "private-health-failure" not in caplog.text
     assert "private-host" not in caplog.text
@@ -125,7 +185,7 @@ def test_failed_health_checks_close_client(make_client, caplog, failure, expecte
 )
 def test_empty_delete_responses_remain_successful(make_client, status, content):
     make_client(response=httpx.Response(status, content=content))
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     assert client._handle_request("DELETE", "/api/items/1") == {
         "success": True, "message": "Operation completed successfully"
     }
@@ -134,13 +194,13 @@ def test_empty_delete_responses_remain_successful(make_client, status, content):
 @pytest.mark.parametrize("payload", [{"items": []}, ["one"], "slug", True, 3])
 def test_successful_json_is_preserved(make_client, payload):
     make_client(response=httpx.Response(200, json=payload))
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     assert client._handle_request("GET", "/api/items") == payload
 
 
 def test_json_and_multipart_headers_are_safe(make_client):
     _, _, requests = make_client()
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     headers = {"X-Test": "value"}
     client._handle_request("POST", "/api/items", json={"value": 1}, headers=headers)
     assert headers == {"X-Test": "value"}
@@ -152,7 +212,7 @@ def test_json_and_multipart_headers_are_safe(make_client):
 def test_unexpected_failures_propagate_without_logging_content(make_client, caplog):
     failure = RuntimeError("private-programming-failure")
     make_client(failure=failure)
-    client = MealieClient("https://private-host.invalid", "synthetic-key")
+    client = MealieClient("https://private-host.invalid", lambda: "synthetic-key")
     with pytest.raises(RuntimeError) as caught:
         client._handle_request("GET", "/api/items")
     assert caught.value is failure
@@ -168,7 +228,7 @@ def test_ai_import_wire_encoding_and_timeout(make_client, monkeypatch, with_imag
 
     http_client, _, requests = make_client(response=httpx.Response(201, json="recipe"))
     http_client.timeout = httpx.Timeout(30.0)
-    client = MealieFetcher("https://private-host.invalid", "synthetic-key")
+    client = MealieFetcher("https://private-host.invalid", lambda: "synthetic-key")
     monkeypatch.setattr(client, "get_current_group", lambda: {
         "aiProviderSettings": {
             "aiEnabled": True, "imageProviderEnabled": True, "audioProviderEnabled": False

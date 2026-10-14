@@ -8,19 +8,24 @@ from typing import Any, Literal
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from identity import AuthentikTokenStore, RequestCredentials
 from mealie import MealieFetcher
 from prompts import register_prompts
 from tools import register_ai_import_tools, register_all_tools
 
 logger = logging.getLogger("mealie-mcp")
-Transport = Literal["stdio", "sse", "streamable-http"]
+Transport = Literal["sse", "streamable-http"]
 
 
 @dataclass(frozen=True)
 class ServerConfig:
     base_url: str = field(repr=False)
-    api_key: str = field(repr=False)
-    transport: Transport = "stdio"
+    authentik_url: str = field(repr=False)
+    authentik_token: str = field(repr=False)
+    user_header: str = "X-User"
+    token_attribute: str = "mealie_token"
+    token_cache_ttl: float = 120.0
+    transport: Transport = "streamable-http"
     host: str = "127.0.0.1"
     port: int = 8765
     log_level: str = "INFO"
@@ -32,15 +37,38 @@ class ServerConfig:
         ai_import = os.getenv("MEALIE_ENABLE_AI_IMPORT", "false").strip().lower()
         if ai_import not in ("true", "false"):
             raise ValueError("MEALIE_ENABLE_AI_IMPORT must be true or false")
-        base_url = os.getenv("MEALIE_BASE_URL")
-        api_key = os.getenv("MEALIE_API_KEY")
-        if not base_url or not api_key:
+        if os.getenv("MEALIE_API_KEY") is not None:
             raise ValueError(
-                "MEALIE_BASE_URL and MEALIE_API_KEY must be set in environment variables."
+                "MEALIE_API_KEY is no longer supported; each user's Mealie token "
+                "is read from Authentik. Remove it and set AUTHENTIK_URL and "
+                "AUTHENTIK_TOKEN."
             )
-        transport = os.getenv("MCP_TRANSPORT", "stdio")
-        if transport not in ("stdio", "sse", "streamable-http"):
-            raise ValueError("MCP_TRANSPORT must be stdio, sse, or streamable-http")
+        base_url = os.getenv("MEALIE_BASE_URL")
+        authentik_url = os.getenv("AUTHENTIK_URL")
+        authentik_token = os.getenv("AUTHENTIK_TOKEN")
+        if not base_url or not authentik_url or not authentik_token:
+            raise ValueError(
+                "MEALIE_BASE_URL, AUTHENTIK_URL, and AUTHENTIK_TOKEN must be set "
+                "in environment variables."
+            )
+        user_header = os.getenv("MCP_USER_HEADER", "X-User").strip()
+        if not user_header:
+            raise ValueError("MCP_USER_HEADER cannot be empty")
+        token_attribute = os.getenv("AUTHENTIK_TOKEN_ATTRIBUTE", "mealie_token").strip()
+        if not token_attribute:
+            raise ValueError("AUTHENTIK_TOKEN_ATTRIBUTE cannot be empty")
+        try:
+            token_cache_ttl = float(os.getenv("MEALIE_TOKEN_CACHE_TTL", "120"))
+        except ValueError:
+            raise ValueError("MEALIE_TOKEN_CACHE_TTL must be a number of seconds") from None
+        if not 0 <= token_cache_ttl <= 3600:
+            raise ValueError("MEALIE_TOKEN_CACHE_TTL must be between 0 and 3600 seconds")
+        transport = os.getenv("MCP_TRANSPORT", "streamable-http")
+        if transport not in ("sse", "streamable-http"):
+            raise ValueError(
+                "MCP_TRANSPORT must be sse or streamable-http; stdio has no "
+                "per-user identity"
+            )
         try:
             port = int(os.getenv("MCP_PORT", "8765"))
         except ValueError:
@@ -55,7 +83,11 @@ class ServerConfig:
             log_level = "INFO"
         return cls(
             base_url=base_url,
-            api_key=api_key,
+            authentik_url=authentik_url,
+            authentik_token=authentik_token,
+            user_header=user_header,
+            token_attribute=token_attribute,
+            token_cache_ttl=token_cache_ttl,
             transport=transport,
             host=os.getenv("MCP_HOST", "127.0.0.1"),
             port=port,
@@ -77,6 +109,7 @@ class _ClientProvider:
     def __init__(self, config: ServerConfig | None):
         self.config = config
         self._client: MealieFetcher | None = None
+        self._tokens: AuthentikTokenStore | None = None
         self._users = 0
 
     def configuration(self) -> ServerConfig:
@@ -94,7 +127,20 @@ class _ClientProvider:
         if self._client is None:
             config = self.configuration()
             _configure_logging(config.log_level)
-            self._client = MealieFetcher(config.base_url, config.api_key)
+            tokens = AuthentikTokenStore(
+                config.authentik_url,
+                config.authentik_token,
+                attribute=config.token_attribute,
+                ttl=config.token_cache_ttl,
+            )
+            try:
+                self._client = MealieFetcher(
+                    config.base_url, RequestCredentials(tokens, config.user_header)
+                )
+            except BaseException:
+                tokens.close()
+                raise
+            self._tokens = tokens
         self._users += 1
         try:
             yield self._client
@@ -102,7 +148,11 @@ class _ClientProvider:
             self._users -= 1
             if self._users == 0:
                 client, self._client = self._client, None
-                client.close()
+                tokens, self._tokens = self._tokens, None
+                try:
+                    client.close()
+                finally:
+                    tokens.close()
 
     @asynccontextmanager
     async def lifespan(self) -> AsyncIterator[MealieFetcher]:
@@ -135,7 +185,9 @@ class _MealieServer(FastMCP):
             register_ai_import_tools(self, self.client_provider)
             self._ai_import_registered = True
 
-    def run(self, transport: Transport = "stdio", mount_path: str | None = None) -> None:
+    def run(
+        self, transport: Transport = "streamable-http", mount_path: str | None = None
+    ) -> None:
         config = self.client_provider.configuration()
         self._configure_optional_tools()
         self.settings.host = config.host

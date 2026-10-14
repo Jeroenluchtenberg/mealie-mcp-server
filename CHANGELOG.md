@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** Per-user Mealie credentials replace the shared API key. Each tool
+  call reads the gateway-verified username from `X-User` (`MCP_USER_HEADER`).
+  It then looks up that user's Mealie token in the Authentik user attribute
+  `mealie_token` and calls Mealie with it. Tokens are cached for
+  `MEALIE_TOKEN_CACHE_TTL` seconds (default 120). New required settings are
+  `AUTHENTIK_URL` and `AUTHENTIK_TOKEN`. Startup now fails if `MEALIE_API_KEY` is
+  set. The stdio transport is removed, and the default transport is
+  `streamable-http`. Missing or rejected tokens return clear tool errors instead
+  of a bare HTTP 401.
 - **Breaking:** `create_recipe` requires `instructions`. Pass `[]` for a recipe
   that intentionally has no steps. Mealie's placeholder step is always replaced,
   and a call with neither ingredients nor instructions is rejected.

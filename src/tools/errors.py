@@ -8,9 +8,24 @@ import httpx
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
+from identity import CredentialError
 from mealie.client import MealieApiError
 
 logger = logging.getLogger("mealie-mcp")
+
+
+def _status_detail(status_code: int) -> str:
+    if status_code == 401:
+        return (
+            "Mealie rejected the token linked to your account (HTTP 401); "
+            "ask the admin to renew it."
+        )
+    if status_code == 403:
+        return (
+            "Your Mealie account is not allowed to do this (HTTP 403); "
+            "ask the admin for the required permission."
+        )
+    return f"Mealie API request failed (HTTP {status_code})"
 
 
 @contextmanager
@@ -24,6 +39,9 @@ def tool_error_boundary(operation: str) -> Iterator[None]:
         yield
     except ToolError:
         raise
+    except CredentialError as error:
+        logger.error({"operation": operation, "error_type": type(error).__name__})
+        raise ToolError(f"{operation}: {error}") from None
     except (
         MealieApiError,
         httpx.HTTPError,
@@ -38,7 +56,7 @@ def tool_error_boundary(operation: str) -> Iterator[None]:
         metadata = {"operation": operation, "error_type": type(error).__name__}
         if isinstance(error, MealieApiError):
             metadata["status_code"] = error.status_code
-            detail = f"Mealie API request failed (HTTP {error.status_code})"
+            detail = _status_detail(error.status_code)
         elif isinstance(error, httpx.HTTPStatusError):
             metadata["status_code"] = error.response.status_code
             detail = f"Mealie API request failed (HTTP {error.response.status_code})"

@@ -216,9 +216,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 
 ## Available Tools
 
-### Recipe Tools (12 operations)
+### Recipe Tools (13 operations)
 
 - `get_recipes` - List/search recipes with advanced filtering
+- `get_favorite_recipes` - List the current user's favorite recipes
 - `get_recipe` - Get complete recipe details, or a summary with `concise=true`
 - `create_recipe` - Create a recipe; name and instructions are required (`[]`
   for a recipe without steps), with optional ingredients, metadata, nutrition,
@@ -314,10 +315,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 
 - `whoami` - Show the current user's username, household, and group
 
-**Total: 63 tools**
+**Total: 64 tools**
 
 With `MEALIE_ENABLE_AI_IMPORT=true`, `import_recipe_with_ai` adds one optional
-recipe operation: **64 total tools, including 13 recipe tools**. It is absent
+recipe operation: **65 total tools, including 14 recipe tools**. It is absent
 from discovery and cannot be called when disabled.
 
 ### Migrating consolidated tools (breaking change)

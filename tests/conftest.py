@@ -5,6 +5,7 @@ records the HTTP requests the mixins would make (method, url, json, params)
 and returns canned responses. No network access is required.
 """
 
+import re
 from copy import deepcopy
 
 import pytest
@@ -135,6 +136,11 @@ class FakeFetcher(MealieFetcher):
         self.foods = None
         self.user = deepcopy(CURRENT_USER)
         self.households = deepcopy(HOUSEHOLDS)
+        # Entries of GET /api/users/self/favorites (UserRatingSummary).
+        self.favorites = []
+        # Optional recipe summaries; when set, /api/recipes honours an
+        # `id IN [...]` queryFilter and the households filter.
+        self.recipe_catalogue = None
 
     def fail_on(self, url_contains, status_code=422, message="Mealie rejected it"):
         """Make any request whose url contains this fragment raise."""
@@ -166,6 +172,10 @@ class FakeFetcher(MealieFetcher):
             return deepcopy(match)
         if method == "GET" and url == "/api/users/self":
             return deepcopy(self.user)
+        if method == "GET" and url == "/api/users/self/favorites":
+            return {"ratings": deepcopy(self.favorites)}
+        if self.recipe_catalogue is not None and method == "GET" and url == "/api/recipes":
+            return self._filter_recipes(kwargs.get("params") or {})
         if method == "GET" and url == "/api/groups/households":
             return {
                 "items": deepcopy(self.households),
@@ -293,6 +303,25 @@ class FakeFetcher(MealieFetcher):
         ):
             return {"success": True, "message": "Operation completed successfully"}
         raise AssertionError(f"Unhandled fake request: {method} {url}")
+
+    def _filter_recipes(self, params):
+        """Apply an `id IN [...]` queryFilter and households, like Mealie."""
+        match = re.fullmatch(r"id IN \[(.*)\]", params.get("queryFilter") or "")
+        ids = set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
+        households = {h.lower() for h in params.get("households") or []}
+        items = [
+            deepcopy(recipe)
+            for recipe in self.recipe_catalogue
+            if (ids is None or recipe["id"] in ids)
+            and (not households or recipe["householdId"].lower() in households)
+        ]
+        return {
+            "items": items,
+            "page": 1,
+            "perPage": params.get("perPage", 50),
+            "total": len(items),
+            "totalPages": 1,
+        }
 
     def _search_foods(self, search):
         """Substring match of any search word on names and aliases, like Mealie."""

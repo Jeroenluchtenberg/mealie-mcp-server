@@ -328,3 +328,61 @@ async def test_credential_failure_mid_call_keeps_earlier_progress(invoke, catalo
     )
     assert [r["status"] for r in out["results"]] == ["created", "error"]
     assert out["results"][1]["error"] == NO_TOKEN_MESSAGE
+
+
+LEAF_CELERY = "c0000000-0000-4000-8000-000000000005"
+
+
+@pytest.fixture
+def compound_catalogue(fetcher):
+    fetcher.foods = [
+        food(LEAF_CELERY, "selderij"),
+        food(CELERIAC, "knolselderij"),
+        food(SALT, "zout"),
+    ]
+    return fetcher
+
+
+async def test_compound_suffix_is_an_alias_suggestion_with_candidates(
+    invoke, compound_catalogue
+):
+    out = await invoke("resolve_ingredients", items=[{"text": "stengel bleekselderij"}])
+    [result] = out["results"]
+    # "bleekselderij" ends in "selderij", but the prefix may make it a
+    # different ingredient, so it is never used directly.
+    assert result["suggestion"] == {
+        "action": "alias",
+        "food": {"id": LEAF_CELERY, "name": "selderij"},
+        "alias": "bleekselderij",
+        "note": "stengel",
+    }
+    assert [(c["id"], c["match"]) for c in result["candidates"]] == [
+        (LEAF_CELERY, "compound"),
+        (CELERIAC, "similar"),
+    ]
+    assert writes(compound_catalogue) == []
+
+
+async def test_compound_suffix_never_beats_a_whole_word_match(invoke, compound_catalogue):
+    out = await invoke("resolve_ingredients", items=[{"text": "knolselderij blokjes"}])
+    [result] = out["results"]
+    assert result["suggestion"]["food"]["id"] == CELERIAC
+    assert LEAF_CELERY in {c["id"] for c in result["candidates"]}
+
+
+async def test_short_names_are_not_compound_suffixes(invoke, fetcher):
+    fetcher.foods = [food(SALT, "ui")]
+    out = await invoke("resolve_ingredients", items=[{"text": "lenteui"}])
+    assert out["results"][0]["candidates"] == []
+    assert out["results"][0]["suggestion"] == {"action": "create", "name": "lenteui"}
+
+
+async def test_per_word_similarity_finds_a_typo_next_to_other_words(invoke, catalogue):
+    out = await invoke("resolve_ingredients", items=[{"text": "stengel bleekseldery"}])
+    [result] = out["results"]
+    assert result["suggestion"] == {
+        "action": "alias",
+        "food": {"id": CELERY, "name": "bleekselderij"},
+        "alias": "bleekseldery",
+        "note": "stengel",
+    }

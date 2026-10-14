@@ -470,7 +470,9 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
           food. Decimal commas ("0,25 tl") are read as decimal points. When no
           existing food matches, quantity and unit are kept and the unmatched
           text goes into the note; such lines are listed in
-          unmatched_ingredients. Resolve them with resolve_ingredients.
+          unmatched_ingredients. To get a suggested food per line first, run
+          the strings through parse_ingredients (see its suggestion field)
+          and pass the confirmed results here as structured ingredients.
         - An ingredient object can set quantity, note, title, an existing
           Mealie unit/food (by id and name), and a referenceId for step links.
         - An instruction string is the step text; an instruction object can
@@ -506,7 +508,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             strings did not match an existing food (or unit), the result also has
             unmatched_ingredients: a list of {index, input, food, unit} giving the
             ingredient position, the original line, and the unmatched text.
-            Resolve them with resolve_ingredients, then update_recipe.
+            Look them up with resolve_ingredients, then update_recipe.
 
         If a later API step fails, the error includes created_slug and stage.
         Inspect that recipe and resume the failed step instead of creating again.

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from identity import CredentialError
 from mealie import MealieFetcher
 from mealie.client import MealieApiError
 from models.foods import IngredientResolution
@@ -155,6 +156,8 @@ def _create(
 
 
 def _failure(error: Exception) -> str:
+    if isinstance(error, CredentialError):
+        return str(error)
     if isinstance(error, MealieApiError):
         if error.status_code == 403:
             return PERMISSION_MESSAGE
@@ -251,6 +254,7 @@ def register_resolve_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                     else:
                         result.update(_create(mealie, foods, item))
                 except (
+                    CredentialError,
                     MealieApiError,
                     httpx.HTTPError,
                     TimeoutError,

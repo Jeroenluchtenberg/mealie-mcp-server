@@ -310,3 +310,21 @@ def test_add_food_alias_rejects_incomplete_record(fetcher):
     with pytest.raises(ValueError):
         fetcher.add_food_alias(SALT, "keukenzout")
     assert [r["method"] for r in fetcher.requests] == ["GET"]
+
+
+async def test_credential_failure_mid_call_keeps_earlier_progress(invoke, catalogue, monkeypatch):
+    from identity import NO_TOKEN_MESSAGE, CredentialError
+
+    def lost_token(*args, **kwargs):
+        raise CredentialError(NO_TOKEN_MESSAGE)
+
+    monkeypatch.setattr(catalogue, "add_food_alias", lost_token)
+    out = await invoke(
+        "resolve_ingredients",
+        items=[
+            {"text": "pandanblad", "action": "create"},
+            {"text": "grof zout", "action": "alias", "food_id": SALT},
+        ],
+    )
+    assert [r["status"] for r in out["results"]] == ["created", "error"]
+    assert out["results"][1]["error"] == NO_TOKEN_MESSAGE

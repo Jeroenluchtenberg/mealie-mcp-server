@@ -128,3 +128,13 @@ async def test_parser_validation_does_not_log_user_supplied_parser(invoke, caplo
         )
     assert "private-parser" not in caplog.text
     assert "private-ingredient" not in caplog.text
+
+
+async def test_parse_ingredients_normalizes_decimal_commas(invoke, fetcher):
+    out = await invoke("parse_ingredients", ingredients=["0,25 tl zout", "1,5 kg"])
+    assert fetcher.last("POST", "/api/parser/ingredients")["json"]["ingredients"] == [
+        "0.25 tl zout",
+        "1.5 kg",
+    ]
+    # results are reported against the caller's own lines
+    assert [r["input"] for r in out] == ["0,25 tl zout", "1,5 kg"]

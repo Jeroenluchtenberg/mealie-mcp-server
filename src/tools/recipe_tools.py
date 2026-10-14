@@ -21,14 +21,7 @@ from models.recipe import (
     RecipeSettingsInput,
 )
 from tools.errors import tool_error_boundary
-
-
-_DECIMAL_COMMA = re.compile(r"(?<=\d),(?=\d)")
-
-
-def _normalize_ingredient_line(line: str) -> str:
-    """Rewrite decimal commas ("0,25 tl") so Mealie's parser reads the quantity."""
-    return _DECIMAL_COMMA.sub(".", line.strip())
+from tools.parser_tools import normalize_ingredient_line
 
 
 def _known_ref(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -63,7 +56,7 @@ def _parse_string_ingredients(
     resolved: List[Union[str, Dict[str, Any], RecipeIngredientInput]] = list(
         ingredients
     )
-    lines = [_normalize_ingredient_line(ingredients[index]) for index in positions]
+    lines = [normalize_ingredient_line(ingredients[index]) for index in positions]
     parsed = mealie.parse_ingredients(lines)
     if not isinstance(parsed, list) or len(parsed) != len(lines):
         raise ValueError("Mealie returned an unexpected ingredient parse result")
@@ -477,7 +470,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
           food. Decimal commas ("0,25 tl") are read as decimal points. When no
           existing food matches, quantity and unit are kept and the unmatched
           text goes into the note; such lines are listed in
-          unmatched_ingredients.
+          unmatched_ingredients. Resolve them with resolve_ingredients.
         - An ingredient object can set quantity, note, title, an existing
           Mealie unit/food (by id and name), and a referenceId for step links.
         - An instruction string is the step text; an instruction object can
@@ -513,7 +506,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             strings did not match an existing food (or unit), the result also has
             unmatched_ingredients: a list of {index, input, food, unit} giving the
             ingredient position, the original line, and the unmatched text.
-            Resolve them with get_foods/create_food and update_recipe.
+            Resolve them with resolve_ingredients, then update_recipe.
 
         If a later API step fails, the error includes created_slug and stage.
         Inspect that recipe and resume the failed step instead of creating again.

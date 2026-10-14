@@ -118,6 +118,47 @@ class FoodsMixin:
         logger.info({"message": "Updating food"})
         return self._handle_request("PUT", f"/api/foods/{food_id}", json=merged)
 
+    def add_food_alias(self, food_id: str, alias: str) -> Dict[str, Any]:
+        """Add an alias to a food unless its name or an alias already matches.
+
+        Mealie's PUT replaces the whole record, so the food is fetched first and
+        written back with the alias appended.
+
+        Args:
+            food_id: The UUID of the food
+            alias: Alternative name that should resolve to this food
+
+        Returns:
+            {"food": <food record>, "added": bool}; "added" is False when the
+            alias was already covered and no write was made
+        """
+        if not food_id:
+            raise ValueError("Food ID cannot be empty")
+        alias = (alias or "").strip()
+        if not alias:
+            raise ValueError("Alias cannot be empty")
+
+        existing = self.get_food(food_id)
+        # Validates the fetched record before anything reads from it.
+        merge_replacement_record(existing, {})
+        aliases = [item for item in existing.get("aliases") or [] if isinstance(item, dict)]
+        known = {
+            str(value).strip().casefold()
+            for value in (
+                existing.get("name"),
+                existing.get("pluralName"),
+                *(item.get("name") for item in aliases),
+            )
+            if value
+        }
+        if alias.casefold() in known:
+            return {"food": existing, "added": False}
+        merged = {**existing, "aliases": [*aliases, {"name": alias}]}
+
+        logger.info({"message": "Adding food alias"})
+        updated = self._handle_request("PUT", f"/api/foods/{food_id}", json=merged)
+        return {"food": updated, "added": True}
+
     def delete_food(self, food_id: str) -> Dict[str, Any]:
         """Delete a specific food.
 

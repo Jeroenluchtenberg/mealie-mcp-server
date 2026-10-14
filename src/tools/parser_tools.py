@@ -1,3 +1,4 @@
+import re
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -6,6 +7,12 @@ from mealie import MealieFetcher
 from tools.errors import tool_error_boundary
 
 _PARSERS = ("nlp", "brute", "openai")
+_DECIMAL_COMMA = re.compile(r"(?<=\d),(?=\d)")
+
+
+def normalize_ingredient_line(line: str) -> str:
+    """Rewrite decimal commas ("0,25 tl") so Mealie's parser reads the quantity."""
+    return _DECIMAL_COMMA.sub(".", line.strip())
 
 
 def _organizer_ref(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -51,13 +58,15 @@ def register_parser_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         Mealie's server-side parser turns "1/4 cup chopped onion" into
         quantity 0.25, the existing "cup" unit, the existing "onion" food, and
         the note "chopped" — in one call, instead of searching get_foods and
-        get_units per ingredient. Pass a one-element list for a single line.
+        get_units per ingredient. Decimal commas ("0,25 tl") are read as decimal
+        points. Pass a one-element list for a single line.
         Results always come back as a list in input order, one per line.
 
         The returned unit and food carry the ids create_recipe needs, so a
         result can be passed straight through as a structured ingredient.
-        A null unit or food means Mealie has no matching entry; create one with
-        create_food or create_unit, or leave the text in the note.
+        A null unit or food means Mealie has no matching entry; resolve it with
+        resolve_ingredients, which prefers an existing food or alias over
+        creating a duplicate.
 
         Confidence is Mealie's own 0-1 score; low values are worth checking
         against the source text before writing the recipe.
@@ -78,5 +87,13 @@ def register_parser_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             _validate_parser(parser)
             if any(not ingredient.strip() for ingredient in ingredients):
                 raise ValueError("Ingredient cannot be empty")
-            parsed = mealie.parse_ingredients(ingredients, parser=parser)
-            return parsed if verbose else [_flatten(p) for p in parsed]
+            parsed = mealie.parse_ingredients(
+                [normalize_ingredient_line(line) for line in ingredients], parser=parser
+            )
+            if verbose:
+                return parsed
+            # Report each result against the caller's own line.
+            return [
+                {**_flatten(result), "input": line}
+                for line, result in zip(ingredients, parsed)
+            ]

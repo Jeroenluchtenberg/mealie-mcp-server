@@ -216,8 +216,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 
 - `get_recipes` - List/search recipes with advanced filtering
 - `get_recipe` - Get complete recipe details, or a summary with `concise=true`
-- `create_recipe` - Create a recipe; only the name is required, with optional
-  ingredients, instructions, metadata, nutrition, and display settings
+- `create_recipe` - Create a recipe; name and instructions are required (`[]`
+  for a recipe without steps), with optional ingredients, metadata, nutrition,
+  and display settings. Ingredient strings are parsed into existing units and
+  foods; lines without a matching food are returned as `unmatched_ingredients`
 - `import_recipe_from_url` - Import a recipe from a web page
 - `update_recipe` - Update content or metadata, including nutrition and display
   settings; omitted fields are preserved, and empty lists clear content
@@ -481,6 +483,12 @@ parse_ingredients(ingredients=["1/4 cup chopped onion", "2 large eggs"])
 A `null` unit or food means your instance has no matching entry; create one
 with `create_food` / `create_unit`, or leave the text in the note. Pass
 `verbose=True` for Mealie's full response including per-field confidences.
+
+`create_recipe` and `update_recipe` run plain ingredient strings through the
+same parser. Decimal commas such as `0,25 tl` are read as `0.25`. When a line
+has no matching food, its quantity and unit are kept and the food text goes
+into the note. Such lines are listed in `unmatched_ingredients` in the result
+so they can be resolved and written back with `update_recipe`.
 
 ### Uploaded Assets and Nutrition Can Be Stored but Hidden
 

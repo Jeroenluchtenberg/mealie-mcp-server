@@ -17,11 +17,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set. The stdio transport is removed, and the default transport is
   `streamable-http`. Missing or rejected tokens return clear tool errors instead
   of a bare HTTP 401.
+- **Breaking:** `create_recipe` requires `instructions`. Pass `[]` for a recipe
+  that intentionally has no steps. Mealie's placeholder step is always replaced,
+  and a call with neither ingredients nor instructions is rejected.
+- `create_recipe` and `update_recipe` parse plain ingredient strings with
+  Mealie's ingredient parser and link them to existing units and foods.
+  Previously, Mealie stored them as bare notes. Decimal commas (`0,25`) are
+  normalized first. Lines without a matching food keep their quantity and unit,
+  carry the unmatched text in the note, and are returned in
+  `unmatched_ingredients`.
 - **Breaking:** Consolidated `create_recipe_full` into `create_recipe` and removed
   the old tool name. Switch callers of `create_recipe_full` to `create_recipe`
-  without changing their arguments. Only `name` is required; ingredients,
-  instructions, metadata, nutrition, and display settings are optional. Existing
-  `create_recipe` calls remain supported.
+  without changing their arguments. `name` and `instructions` are required;
+  ingredients, metadata, nutrition, and display settings are optional.
 - **Breaking:** Consolidated detailed/concise recipe reads into `get_recipe`
   (`concise=True` for a summary), and `patch_recipe` into `update_recipe`.
   Recipe updates accept optional ingredients, instructions, and metadata in one

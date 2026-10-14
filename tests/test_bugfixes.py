@@ -29,6 +29,7 @@ async def test_create_recipe_fills_organizer_slug(invoke, fetcher):
     await invoke(
         "create_recipe",
         name="R",
+        instructions=["Cook."],
         tags=[{"id": "t1", "name": "Vegetarisch"}],  # slug omitted -> derived
         tools=[{"id": "k1", "name": "Pfanne", "slug": "my-pfanne"}],  # slug kept
     )

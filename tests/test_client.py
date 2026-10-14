@@ -269,3 +269,16 @@ def test_ai_import_wire_encoding_and_timeout(make_client, monkeypatch, with_imag
         assert parse_qs(request.content.decode()) == {key: [value] for key, value in expected.items()}
     client.get_recipes()
     assert requests[-1].extensions["timeout"]["read"] == 30.0
+
+
+def test_recipe_list_filters_are_sent_as_repeated_query_keys(make_client):
+    from mealie import MealieFetcher
+
+    _, _, requests = make_client(response=httpx.Response(200, json={"items": []}))
+    client = MealieFetcher("https://private-host.invalid", lambda: "synthetic-key")
+    client.get_recipes(tags=["quick", "vegan"], households=["a", "b"], page=2)
+    params = requests[-1].url.params
+    assert params.get_list("tags") == ["quick", "vegan"]
+    assert params.get_list("households") == ["a", "b"]
+    assert params["page"] == "2"
+    assert "search" not in params

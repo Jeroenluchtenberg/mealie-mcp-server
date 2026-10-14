@@ -310,10 +310,14 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 - `delete_mealplan` - Delete an entry
 - `get_todays_mealplan` - Get today's meals
 
-**Total: 62 tools**
+### User Tools (1 operation)
+
+- `whoami` - Show the current user's username, household, and group
+
+**Total: 63 tools**
 
 With `MEALIE_ENABLE_AI_IMPORT=true`, `import_recipe_with_ai` adds one optional
-recipe operation: **63 total tools, including 13 recipe tools**. It is absent
+recipe operation: **64 total tools, including 13 recipe tools**. It is absent
 from discovery and cannot be called when disabled.
 
 ### Migrating consolidated tools (breaking change)
@@ -462,6 +466,20 @@ get_recipes(tags=["quick-meals", "healthy"])
 ```
 
 For example, pass `quick-meals`, not the display name `Quick Meals`.
+
+### Filtering by Household
+
+Recipes are shared across all households in a Mealie group, so `get_recipes`
+returns every household's recipes by default. Filter with household ids or
+slugs, or `"self"` for the caller's own household:
+
+```python
+get_recipes(households=["self"])
+```
+
+Unknown households return an error rather than an unfiltered list. Concise
+results include each recipe's `household` slug. Meal plans and shopping lists
+are already scoped to the caller's household.
 
 ### Nutrition Is Replaced, Not Merged
 

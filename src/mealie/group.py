@@ -15,3 +15,14 @@ class GroupMixin:
         """
         logger.info({"message": "Retrieving current group information"})
         return self._handle_request("GET", "/api/groups/self")
+
+    def get_households(self) -> Dict[str, Any]:
+        """List every household in the current user's group.
+
+        Returns:
+            Paginated response whose items hold each household's id, name, and slug.
+        """
+        logger.info({"message": "Retrieving group households"})
+        return self._handle_request(
+            "GET", "/api/groups/households", params={"perPage": -1}
+        )

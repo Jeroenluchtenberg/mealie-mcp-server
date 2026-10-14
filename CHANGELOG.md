@@ -49,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `get_recipes` accepts `households` (ids, slugs, or `"self"` for the caller's
+  own household). Unknown households return an error instead of an unfiltered
+  list. Concise results include each recipe's `household` slug.
+- `whoami` returns the current user's username, household, and group.
 - `resolve_ingredients` resolves food text the parser could not match. Its
   read-only `suggest` pass ranks existing foods (exact, contained word, or
   similar name) and suggests `use`, `use_with_note`, `alias`, or `create`. The
@@ -77,6 +81,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- List filters on `get_recipes` (`tags`, `categories`) are sent as repeated
+  query keys. They were comma-joined before, so Mealie read several values as
+  one unknown slug and silently dropped the filter.
 - Recipes now expose `showAssets` and `showNutrition` through their settings.
   Previously, uploaded assets and nutrition could be stored but hidden in the
   Mealie UI when household defaults disabled those cards.

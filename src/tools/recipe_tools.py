@@ -316,11 +316,71 @@ def _with_unmatched(
     return recipe
 
 
-def _concise_recipe_page(page: Any) -> Any:
+def _households_by_id(mealie: MealieFetcher) -> Dict[str, Dict[str, Any]]:
+    """Fetch the group's households once, keyed by lowercase id."""
+    page = mealie.get_households()
+    items = page.get("items") if isinstance(page, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("Mealie returned an unexpected household list")
+    return {
+        str(household["id"]).lower(): household
+        for household in items
+        if isinstance(household, dict) and household.get("id")
+    }
+
+
+def _resolve_households(
+    mealie: MealieFetcher,
+    requested: List[str],
+    households: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Turn household ids, slugs, and "self" into known household ids.
+
+    Mealie ignores slugs it cannot match and drops the filter entirely when
+    nothing matches, so unknown values are rejected here instead.
+    """
+    by_slug = {
+        str(household.get("slug")).lower(): household_id
+        for household_id, household in households.items()
+        if household.get("slug")
+    }
+    resolved: List[str] = []
+    unknown: List[str] = []
+    for value in requested:
+        key = value.strip().lower()
+        if key == "self":
+            own = mealie.get_current_user().get("householdId")
+            if not own:
+                raise ValueError("Mealie did not report your household")
+            match = str(own).lower()
+        elif key in households:
+            match = key
+        elif key in by_slug:
+            match = by_slug[key]
+        else:
+            unknown.append(value)
+            continue
+        if match not in resolved:
+            resolved.append(match)
+    if unknown:
+        available = ", ".join(
+            sorted(str(h.get("slug")) for h in households.values() if h.get("slug"))
+        )
+        raise ValueError(
+            f"Unknown household(s): {', '.join(unknown)}. "
+            f"Available households: {available or 'none'}"
+        )
+    return resolved
+
+
+def _concise_recipe_page(
+    page: Any, households: Optional[Dict[str, Dict[str, Any]]] = None
+) -> Any:
     """Reduce a recipe list page to the fields needed to pick recipes.
 
     Full tag, category, and tool objects make a page of recipes very large, so
-    each item keeps only its id, name, slug, tag names, and total time.
+    each item keeps only its id, name, slug, tag names, total time, and the
+    slug of the household that owns it.
     """
     if not isinstance(page, dict):
         return page
@@ -339,6 +399,10 @@ def _concise_recipe_page(page: Any) -> Any:
         }
         if item.get("totalTime") is not None:
             summary["totalTime"] = item["totalTime"]
+        household_id = item.get("householdId")
+        if household_id:
+            household = (households or {}).get(str(household_id).lower()) or {}
+            summary["household"] = household.get("slug") or household_id
         items.append(summary)
     concise["items"] = items
     return concise
@@ -356,9 +420,17 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         tags: Optional[List[str]] = None,
         require_all_tags: Optional[bool] = None,
         require_all_categories: Optional[bool] = None,
+        households: Optional[List[str]] = None,
         concise: bool = True,
     ) -> Dict[str, Any]:
         """Provides a paginated list of recipes with optional filtering.
+
+        Recipes are shared across every household in the Mealie group, so
+        without a households filter the results include all households' recipes.
+        When the user says "my household", "my recipes", "our recipes", or
+        similar, pass households=["self"] to limit results to the caller's own
+        household. Meal plans and shopping lists are already scoped to the
+        caller's household and need no filter.
 
         IMPORTANT: When filtering by tags or categories, you MUST use slugs or UUIDs, NOT display names!
         - ✅ Correct: tags=["quick-meals", "vegetarian"]
@@ -374,15 +446,25 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             tags: Filter by tag SLUGS or UUIDs (e.g., ["quick", "healthy"]).
             require_all_tags: If True, recipe must have ALL specified tags (AND). Default False (OR).
             require_all_categories: If True, recipe must have ALL specified categories (AND).
-            concise: Return only id, name, slug, tag names, and totalTime per recipe
-                (default). Tag names are not filter slugs. Set False for the full
-                Mealie recipe summaries including tag, category, and tool objects.
+            households: Filter by household ids or slugs (OR). Use "self" for the
+                caller's own household. Unknown households raise an error.
+            concise: Return only id, name, slug, tag names, totalTime, and the
+                owning household's slug per recipe (default). Tag names are not
+                filter slugs. Set False for the full Mealie recipe summaries
+                including tag, category, and tool objects.
 
         Returns:
             Dict[str, Any]: Pagination info (page, perPage, total, totalPages) and
                 recipe items, concise by default or full summaries when concise=False.
         """
         with tool_error_boundary("Error fetching recipes"):
+            known_households = None
+            household_ids = None
+            if households:
+                known_households = _households_by_id(mealie)
+                household_ids = _resolve_households(
+                    mealie, households, known_households
+                )
             result = mealie.get_recipes(
                 search=search,
                 page=page,
@@ -391,8 +473,17 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 tags=tags,
                 require_all_tags=require_all_tags,
                 require_all_categories=require_all_categories,
+                households=household_ids,
             )
-            return _concise_recipe_page(result) if concise else result
+            if not concise:
+                return result
+            if (
+                known_households is None
+                and isinstance(result, dict)
+                and result.get("items")
+            ):
+                known_households = _households_by_id(mealie)
+            return _concise_recipe_page(result, known_households)
 
     @mcp.tool()
     def get_recipe(slug: str, concise: bool = False) -> Dict[str, Any]:

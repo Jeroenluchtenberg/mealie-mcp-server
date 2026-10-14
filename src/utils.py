@@ -8,13 +8,10 @@ def format_error_response(error_message: str) -> str:
 
 
 def format_api_params(params: dict) -> dict:
-    """Formats list and None values in a dictionary for API parameters."""
-    output = {}
-    for k, v in params.items():
-        if v is None:
-            continue
-        if isinstance(v, list):
-            output[k] = ",".join(v)
-        else:
-            output[k] = v
-    return output
+    """Drop None values from API parameters.
+
+    Lists stay lists so httpx sends them as repeated keys (``tags=a&tags=b``),
+    which is how Mealie's list query parameters are parsed. A comma-joined
+    string would arrive as one unknown slug and Mealie would drop the filter.
+    """
+    return {k: v for k, v in params.items() if v is not None}

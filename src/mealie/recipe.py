@@ -48,6 +48,7 @@ class RecipeMixin:
         categories: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         tools: Optional[List[str]] = None,
+        households: Optional[List[str]] = None,
         require_all_tags: Optional[bool] = None,
         require_all_categories: Optional[bool] = None,
         require_all_tools: Optional[bool] = None,
@@ -66,6 +67,7 @@ class RecipeMixin:
             categories: List of category slugs (NOT names) to filter by
             tags: List of tag slugs or UUIDs (NOT display names) to filter by
             tools: List of tool slugs to filter by
+            households: List of household ids or slugs to filter by
             require_all_tags: If True, recipe must have ALL specified tags (AND logic). Default False (OR logic)
             require_all_categories: If True, recipe must have ALL specified categories (AND logic)
             require_all_tools: If True, recipe must have ALL specified tools (AND logic)
@@ -86,6 +88,7 @@ class RecipeMixin:
             "categories": categories,
             "tags": tags,
             "tools": tools,
+            "households": households,
             "requireAllTags": require_all_tags,
             "requireAllCategories": require_all_categories,
             "requireAllTools": require_all_tools,

@@ -81,6 +81,42 @@ def _parsed(text):
     }
 
 
+OWN_HOUSEHOLD_ID = "0b6f7b2a-2f4e-4a8e-9a43-5d1c2f3e4a01"
+OTHER_HOUSEHOLD_ID = "7c1d9e3f-8a2b-4c5d-9e6f-1a2b3c4d5e02"
+
+HOUSEHOLDS = [
+    {
+        "groupId": "5f3a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b03",
+        "name": "Luchtenberg",
+        "id": OWN_HOUSEHOLD_ID,
+        "slug": "luchtenberg",
+        "preferences": None,
+    },
+    {
+        "groupId": "5f3a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b03",
+        "name": "Neighbours",
+        "id": OTHER_HOUSEHOLD_ID,
+        "slug": "neighbours",
+        "preferences": None,
+    },
+]
+
+# Subset of Mealie's UserOut (GET /api/users/self).
+CURRENT_USER = {
+    "id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c04",
+    "username": "tester",
+    "fullName": "Test User",
+    "email": "tester@example.com",
+    "admin": False,
+    "group": "Home",
+    "groupId": "5f3a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b03",
+    "groupSlug": "home",
+    "household": "Luchtenberg",
+    "householdId": OWN_HOUSEHOLD_ID,
+    "householdSlug": "luchtenberg",
+}
+
+
 class FakeFetcher(MealieFetcher):
     """MealieFetcher with the network layer replaced by a recorder.
 
@@ -97,6 +133,8 @@ class FakeFetcher(MealieFetcher):
         self.failures = {}
         # Optional food catalogue; when set, /api/foods searches and reads use it.
         self.foods = None
+        self.user = deepcopy(CURRENT_USER)
+        self.households = deepcopy(HOUSEHOLDS)
 
     def fail_on(self, url_contains, status_code=422, message="Mealie rejected it"):
         """Make any request whose url contains this fragment raise."""
@@ -126,6 +164,16 @@ class FakeFetcher(MealieFetcher):
             if match is None:
                 raise MealieApiError(404, "Food not found")
             return deepcopy(match)
+        if method == "GET" and url == "/api/users/self":
+            return deepcopy(self.user)
+        if method == "GET" and url == "/api/groups/households":
+            return {
+                "items": deepcopy(self.households),
+                "page": 1,
+                "perPage": -1,
+                "total": len(self.households),
+                "totalPages": 1,
+            }
         if method == "POST" and url == "/api/recipes/create/ai":
             return self.created_slug
         if method == "POST" and url == "/api/recipes":

@@ -9,6 +9,7 @@ from copy import deepcopy
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
+from conftest import OTHER_HOUSEHOLD_ID, OWN_HOUSEHOLD_ID
 from mealie.client import MealieApiError
 from tools.recipe_tools import _compose_recipe
 
@@ -990,6 +991,7 @@ RECIPE_PAGE = {
             "id": "r1",
             "name": "Stamppot",
             "slug": "stamppot",
+            "householdId": OWN_HOUSEHOLD_ID,
             "description": "Winter classic",
             "image": "abc",
             "totalTime": "45 min",
@@ -999,9 +1001,20 @@ RECIPE_PAGE = {
                 {"id": "k1", "name": "Pan", "slug": "pan", "householdsWithTool": []}
             ],
         },
-        {"id": "r2", "name": "Soep", "slug": "soep", "tags": None, "totalTime": None},
+        {
+            "id": "r2",
+            "name": "Soep",
+            "slug": "soep",
+            "householdId": OTHER_HOUSEHOLD_ID.upper(),
+            "tags": None,
+            "totalTime": None,
+        },
     ],
 }
+
+
+def _calls(fetcher):
+    return [(r["method"], r["url"]) for r in fetcher.requests]
 
 
 async def test_get_recipes_is_concise_by_default(invoke, fetcher):
@@ -1019,22 +1032,116 @@ async def test_get_recipes_is_concise_by_default(invoke, fetcher):
                 "slug": "stamppot",
                 "tags": ["Quick"],
                 "totalTime": "45 min",
+                "household": "luchtenberg",
             },
-            {"id": "r2", "name": "Soep", "slug": "soep", "tags": []},
+            {
+                "id": "r2",
+                "name": "Soep",
+                "slug": "soep",
+                "tags": [],
+                "household": "neighbours",
+            },
         ],
     }
-    request = fetcher.last("GET")
-    assert request["url"] == "/api/recipes"
+    request = fetcher.last("GET", url_contains="/api/recipes")
     assert request["params"]["search"] == "pot"
     assert request["params"]["perPage"] == 50
-    assert request["params"]["tags"] == "quick"
+    assert request["params"]["tags"] == ["quick"]
     assert "concise" not in request["params"]
 
 
-async def test_get_recipes_full_response_when_not_concise(invoke, fetcher):
+async def test_get_recipes_without_households_is_unfiltered(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    await invoke("get_recipes")
+    assert "households" not in fetcher.last("GET", url_contains="/api/recipes")["params"]
+    assert _calls(fetcher) == [
+        ("GET", "/api/recipes"),
+        ("GET", "/api/groups/households"),
+    ]
+    assert fetcher.last("GET", url_contains="/api/groups")["params"] == {"perPage": -1}
+
+
+async def test_get_recipes_full_response_skips_household_lookup(invoke, fetcher):
     fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
     out = await invoke("get_recipes", concise=False)
     assert out == RECIPE_PAGE
+    assert _calls(fetcher) == [("GET", "/api/recipes")]
+
+
+async def test_get_recipes_empty_page_skips_household_lookup(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = {"items": [], "total": 0}
+    assert (await invoke("get_recipes"))["items"] == []
+    assert _calls(fetcher) == [("GET", "/api/recipes")]
+
+
+async def test_get_recipes_self_resolves_own_household(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    out = await invoke("get_recipes", households=["self"])
+    assert fetcher.last("GET", url_contains="/api/recipes")["params"][
+        "households"
+    ] == [OWN_HOUSEHOLD_ID]
+    assert sorted(_calls(fetcher)) == [
+        ("GET", "/api/groups/households"),
+        ("GET", "/api/recipes"),
+        ("GET", "/api/users/self"),
+    ]
+    assert out["items"][0]["household"] == "luchtenberg"
+
+
+async def test_get_recipes_self_lookup_skipped_without_self(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    await invoke("get_recipes", households=["neighbours"])
+    assert ("GET", "/api/users/self") not in _calls(fetcher)
+
+
+@pytest.mark.parametrize(
+    "value", ["neighbours", "Neighbours", OTHER_HOUSEHOLD_ID, OTHER_HOUSEHOLD_ID.upper()]
+)
+async def test_get_recipes_accepts_household_slug_and_id(invoke, fetcher, value):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    await invoke("get_recipes", households=[value])
+    assert fetcher.last("GET", url_contains="/api/recipes")["params"][
+        "households"
+    ] == [OTHER_HOUSEHOLD_ID]
+
+
+async def test_get_recipes_multiple_households_deduplicated(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    await invoke(
+        "get_recipes", households=["self", "luchtenberg", OTHER_HOUSEHOLD_ID]
+    )
+    assert fetcher.last("GET", url_contains="/api/recipes")["params"][
+        "households"
+    ] == [OWN_HOUSEHOLD_ID, OTHER_HOUSEHOLD_ID]
+
+
+async def test_get_recipes_unknown_household_errors(invoke, fetcher):
+    with pytest.raises(ToolError) as error:
+        await invoke("get_recipes", households=["luchtenberg", "nobody"])
+    message = str(error.value)
+    assert "Unknown household(s): nobody" in message
+    assert "luchtenberg, neighbours" in message
+    assert not any(r["url"] == "/api/recipes" for r in fetcher.requests)
+
+
+async def test_get_recipes_household_lookup_happens_once(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    await invoke("get_recipes", households=["self", "neighbours"])
+    assert _calls(fetcher).count(("GET", "/api/groups/households")) == 1
+
+
+async def test_get_recipes_unknown_household_id_in_items_falls_back(invoke, fetcher):
+    page = deepcopy(RECIPE_PAGE)
+    page["items"][0]["householdId"] = "11111111-1111-4111-8111-111111111111"
+    fetcher.responses["GET", "/api/recipes"] = page
+    out = await invoke("get_recipes")
+    assert out["items"][0]["household"] == "11111111-1111-4111-8111-111111111111"
+
+
+async def test_get_recipes_rejects_malformed_household_list(invoke, fetcher):
+    fetcher.responses["GET", "/api/groups/households"] = {"detail": "nope"}
+    with pytest.raises(ToolError, match="unexpected household list"):
+        await invoke("get_recipes", households=["self"])
 
 
 @pytest.mark.parametrize("concise", [False, True])
@@ -1044,6 +1151,39 @@ async def test_get_recipes_surfaces_failures(invoke, fetcher, concise):
         await invoke("get_recipes", concise=concise)
 
 
-async def test_get_recipes_rejects_invalid_concise(invoke):
+@pytest.mark.parametrize("url", ["/api/users/self", "/api/groups/households"])
+async def test_get_recipes_surfaces_household_lookup_failures(invoke, fetcher, url):
+    fetcher.fail_on(url, 500)
+    with pytest.raises(ToolError, match="Error fetching recipes"):
+        await invoke("get_recipes", households=["self"])
+
+
+async def test_get_recipes_rejects_invalid_arguments(invoke):
     with pytest.raises(ToolError):
         await invoke("get_recipes", concise="sometimes")
+    with pytest.raises(ToolError):
+        await invoke("get_recipes", households="self")
+
+
+async def test_whoami_returns_user_household_and_group(invoke, fetcher):
+    out = await invoke("whoami")
+    assert out == {
+        "username": "tester",
+        "household": {
+            "id": OWN_HOUSEHOLD_ID,
+            "slug": "luchtenberg",
+            "name": "Luchtenberg",
+        },
+        "group": {
+            "id": "5f3a1b2c-3d4e-4f5a-8b6c-7d8e9f0a1b03",
+            "slug": "home",
+            "name": "Home",
+        },
+    }
+    assert _calls(fetcher) == [("GET", "/api/users/self")]
+
+
+async def test_whoami_surfaces_failures(invoke, fetcher):
+    fetcher.fail_on("/api/users/self", 401)
+    with pytest.raises(ToolError, match="Error fetching current user.*401"):
+        await invoke("whoami")

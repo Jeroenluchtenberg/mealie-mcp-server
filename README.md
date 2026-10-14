@@ -126,6 +126,19 @@ enforces authentication and HTTPS.
 
 The [Dockerfile](Dockerfile) runs the server as a persistent container.
 
+### Prebuilt Image
+
+Multi-arch (`linux/amd64`, `linux/arm64`) images are published to the GitHub
+Container Registry on every push to `main` (`latest`, `main`, `sha-<short>`) and
+for `v*` tags (`X.Y.Z`, `X.Y`):
+
+```bash
+docker pull ghcr.io/jeroenluchtenberg/mealie-mcp-server:latest
+```
+
+Use this image in place of `mealie-mcp-server` in the examples below, or build
+it locally.
+
 ### Build
 
 ```bash

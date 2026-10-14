@@ -39,7 +39,8 @@ async def test_create_recipe_returns_populated_recipe(invoke):
         ingredients=["200 g rice"],
         instructions=["Boil it."],
     )
-    assert out["recipeIngredient"][0]["note"] == "200 g rice"
+    assert out["recipeIngredient"][0]["food"]["name"] == "onion"
+    assert out["recipeIngredient"][0]["originalText"] == "200 g rice"
     assert out["recipeInstructions"][0]["text"] == "Boil it."
 
 

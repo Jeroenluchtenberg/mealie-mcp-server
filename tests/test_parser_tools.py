@@ -93,7 +93,7 @@ async def test_parsed_result_feeds_create_recipe(invoke, fetcher):
     """The parser output must be usable as a structured ingredient verbatim."""
     parsed = await invoke("parse_ingredients", ingredients=["1/4 cup chopped onion"])
 
-    await invoke("create_recipe", name="Parsed", ingredients=parsed)
+    await invoke("create_recipe", name="Parsed", ingredients=parsed, instructions=[])
 
     written = fetcher.last("PUT", "/api/recipes/")["json"]["recipeIngredient"][0]
     assert written["quantity"] == 0.25

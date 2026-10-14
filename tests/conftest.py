@@ -95,6 +95,8 @@ class FakeFetcher(MealieFetcher):
         self.responses = {}
         # url fragment -> MealieApiError to raise, for client-failure tests
         self.failures = {}
+        # Optional food catalogue; when set, /api/foods searches and reads use it.
+        self.foods = None
 
     def fail_on(self, url_contains, status_code=422, message="Mealie rejected it"):
         """Make any request whose url contains this fragment raise."""
@@ -117,6 +119,13 @@ class FakeFetcher(MealieFetcher):
         if (method, url) in self.responses:
             return deepcopy(self.responses[method, url])
         resource_url, _, resource_id = url.rpartition("/")
+        if self.foods is not None and method == "GET" and url == "/api/foods":
+            return self._search_foods((kwargs.get("params") or {}).get("search"))
+        if self.foods is not None and method == "GET" and resource_url == "/api/foods":
+            match = next((f for f in self.foods if f["id"] == resource_id), None)
+            if match is None:
+                raise MealieApiError(404, "Food not found")
+            return deepcopy(match)
         if method == "POST" and url == "/api/recipes/create/ai":
             return self.created_slug
         if method == "POST" and url == "/api/recipes":
@@ -236,6 +245,21 @@ class FakeFetcher(MealieFetcher):
         ):
             return {"success": True, "message": "Operation completed successfully"}
         raise AssertionError(f"Unhandled fake request: {method} {url}")
+
+    def _search_foods(self, search):
+        """Substring match of any search word on names and aliases, like Mealie."""
+        words = (search or "").casefold().split()
+
+        def names(food):
+            return [food["name"], *(a["name"] for a in food.get("aliases", []))]
+
+        items = [
+            deepcopy(food)
+            for food in self.foods
+            if not words
+            or any(w in n.casefold() for w in words for n in names(food))
+        ]
+        return {"items": items, "page": 1, "perPage": 50, "total": len(items)}
 
     def last(self, method=None, url_contains=None):
         """Return the most recent recorded request matching method/url filter."""

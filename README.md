@@ -284,9 +284,11 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 - `update_tool` - Update tool
 - `delete_tool` - Delete tool
 
-### Parser Tools (1 operation)
+### Parser Tools (2 operations)
 
 - `parse_ingredients` - Resolve one or more ingredient lines in one request; always returns a list
+- `resolve_ingredients` - Match unmatched food text to existing foods (suggest),
+  then add an alias or create a food, with duplicate guards
 
 ### Meal Plan Tools (6 operations)
 
@@ -297,10 +299,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 - `delete_mealplan` - Delete an entry
 - `get_todays_mealplan` - Get today's meals
 
-**Total: 61 tools**
+**Total: 62 tools**
 
 With `MEALIE_ENABLE_AI_IMPORT=true`, `import_recipe_with_ai` adds one optional
-recipe operation: **62 total tools, including 13 recipe tools**. It is absent
+recipe operation: **63 total tools, including 13 recipe tools**. It is absent
 from discovery and cannot be called when disabled.
 
 ### Migrating consolidated tools (breaking change)
@@ -479,6 +481,37 @@ same parser. Decimal commas such as `0,25 tl` are read as `0.25`. When a line
 has no matching food, its quantity and unit are kept and the food text goes
 into the note. Such lines are listed in `unmatched_ingredients` in the result
 so they can be resolved and written back with `update_recipe`.
+
+### Resolving Unmatched Foods Without Duplicates
+
+`resolve_ingredients` works in two passes. Use it before creating foods, because
+duplicates such as `selderij` / `bleekselderij` / `stengel selderij` stop shopping
+lists from merging items.
+
+```python
+resolve_ingredients(items=[{"text": "stengel bleekselderij"}, {"text": "zout naar smaak"}])
+# -> suggestion use_with_note: food "bleekselderij", note "stengel"
+#    suggestion use_with_note: food "zout", note "naar smaak"
+
+resolve_ingredients(items=[
+    {"text": "laurierbladeren", "action": "alias", "food_id": "<laurierblad id>"},
+    {"text": "pandanblad", "action": "create"},
+])
+```
+
+The default `suggest` action only reads. It loads the food catalogue once per
+call and compares each text with every food name, plural, and alias: as a
+whole, word by word, and by similarity. Mealie's own search only finds
+substrings, so it would miss `laurierbladeren` → `laurierblad`. It suggests `use` (an exact
+match), `use_with_note` (an existing food appears in the text; the remaining
+words become the note), `alias` (a near-identical name), or `create`. The
+`alias` action makes the parser match the text from then on. `create` returns
+`exists` instead of making a duplicate, and `alias` returns `conflict` when
+another food already owns that name.
+
+Creating foods or aliases needs the Mealie permission **can organize group
+data**. Without it, Mealie returns HTTP 403. The item then reports that
+permission and the remaining writes are skipped.
 
 ### Uploaded Assets and Nutrition Can Be Stored but Hidden
 

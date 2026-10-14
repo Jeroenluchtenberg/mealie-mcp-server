@@ -20,7 +20,7 @@ You have access to a Mealie recipe database with various recipes. You can search
 ## Tool Usage Guidelines
 
 ### Recipe Tools
-- get_recipes: Search and list recipes (always set per_page=50. Use null if empty values)
+- get_recipes: Search and list recipes (always set per_page=50. Use null if empty values). Returns id, name, slug, tag names, and totalTime per recipe by default; use get_recipe for details
 - get_recipe: Use concise=true for basic recipe details by default; use concise=false for full information only when the user asks for it
 
 ### Meal Plan Tools

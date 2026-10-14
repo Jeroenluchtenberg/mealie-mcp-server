@@ -976,3 +976,74 @@ async def test_malformed_parse_response_is_rejected(invoke, fetcher):
             "create_recipe", name="Recipe", ingredients=["1 onion"], instructions=[]
         )
     assert all(r["method"] != "PUT" for r in fetcher.requests)
+
+
+RECIPE_PAGE = {
+    "page": 1,
+    "perPage": 50,
+    "total": 2,
+    "totalPages": 1,
+    "next": None,
+    "previous": None,
+    "items": [
+        {
+            "id": "r1",
+            "name": "Stamppot",
+            "slug": "stamppot",
+            "description": "Winter classic",
+            "image": "abc",
+            "totalTime": "45 min",
+            "tags": [{"id": "t1", "name": "Quick", "slug": "quick"}],
+            "recipeCategory": [{"id": "c1", "name": "Dinner", "slug": "dinner"}],
+            "tools": [
+                {"id": "k1", "name": "Pan", "slug": "pan", "householdsWithTool": []}
+            ],
+        },
+        {"id": "r2", "name": "Soep", "slug": "soep", "tags": None, "totalTime": None},
+    ],
+}
+
+
+async def test_get_recipes_is_concise_by_default(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    out = await invoke("get_recipes", search="pot", per_page=50, tags=["quick"])
+    assert out == {
+        "page": 1,
+        "perPage": 50,
+        "total": 2,
+        "totalPages": 1,
+        "items": [
+            {
+                "id": "r1",
+                "name": "Stamppot",
+                "slug": "stamppot",
+                "tags": ["Quick"],
+                "totalTime": "45 min",
+            },
+            {"id": "r2", "name": "Soep", "slug": "soep", "tags": []},
+        ],
+    }
+    request = fetcher.last("GET")
+    assert request["url"] == "/api/recipes"
+    assert request["params"]["search"] == "pot"
+    assert request["params"]["perPage"] == 50
+    assert request["params"]["tags"] == "quick"
+    assert "concise" not in request["params"]
+
+
+async def test_get_recipes_full_response_when_not_concise(invoke, fetcher):
+    fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
+    out = await invoke("get_recipes", concise=False)
+    assert out == RECIPE_PAGE
+
+
+@pytest.mark.parametrize("concise", [False, True])
+async def test_get_recipes_surfaces_failures(invoke, fetcher, concise):
+    fetcher.fail_on("/api/recipes", 500)
+    with pytest.raises(ToolError, match="Error fetching recipes"):
+        await invoke("get_recipes", concise=concise)
+
+
+async def test_get_recipes_rejects_invalid_concise(invoke):
+    with pytest.raises(ToolError):
+        await invoke("get_recipes", concise="sometimes")

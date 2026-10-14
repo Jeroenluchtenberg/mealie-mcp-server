@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Streamable HTTP is stateless. Calls no longer depend on an in-memory MCP
+  session, so clients such as claude.ai keep working after the server restarts
+  or is redeployed, instead of failing with "No valid session ID provided".
+  Upgraded the MCP SDK to 1.30.
 - **Breaking:** Per-user Mealie credentials replace the shared API key. Each tool
   call reads the gateway-verified username from `X-User` (`MCP_USER_HEADER`).
   It then looks up that user's Mealie token in the Authentik user attribute

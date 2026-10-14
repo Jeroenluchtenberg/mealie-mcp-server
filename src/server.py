@@ -177,6 +177,9 @@ class _MealieServer(FastMCP):
             port=config.port if config else 8765,
             log_level=config.log_level if config else "INFO",
             lifespan=lifespan,
+            # Every call carries its own gateway identity and nothing is
+            # session-bound, so sessions only go stale across restarts.
+            stateless_http=True,
         )
 
     def _configure_optional_tools(self) -> None:

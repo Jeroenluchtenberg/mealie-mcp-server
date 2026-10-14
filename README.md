@@ -137,6 +137,10 @@ can also copy [`.env.template`](.env.template) to `.env`. Never commit tokens.
 shared token cannot stay in use by mistake. The stdio transport is not supported
 either, because it carries no per-user identity.
 
+Streamable HTTP runs stateless: every request stands on its own, so connected
+clients survive server restarts and redeploys without reconnecting. Legacy SSE
+keeps per-connection state and does not.
+
 At startup, the server checks that Mealie is healthy and that Authentik accepts
 the service-account token. It exits if either check fails. The MCP endpoint is
 `http://<host>:<port>/mcp`.

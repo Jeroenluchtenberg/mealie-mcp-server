@@ -316,6 +316,34 @@ def _with_unmatched(
     return recipe
 
 
+def _concise_recipe_page(page: Any) -> Any:
+    """Reduce a recipe list page to the fields needed to pick recipes.
+
+    Full tag, category, and tool objects make a page of recipes very large, so
+    each item keeps only its id, name, slug, tag names, and total time.
+    """
+    if not isinstance(page, dict):
+        return page
+    concise = {
+        key: page[key]
+        for key in ("page", "perPage", "total", "totalPages")
+        if key in page
+    }
+    items = []
+    for item in page.get("items") or []:
+        summary = {
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "slug": item.get("slug"),
+            "tags": [tag.get("name") for tag in item.get("tags") or []],
+        }
+        if item.get("totalTime") is not None:
+            summary["totalTime"] = item["totalTime"]
+        items.append(summary)
+    concise["items"] = items
+    return concise
+
+
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
     """Register all recipe-related tools with the MCP server."""
 
@@ -328,6 +356,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         tags: Optional[List[str]] = None,
         require_all_tags: Optional[bool] = None,
         require_all_categories: Optional[bool] = None,
+        concise: bool = True,
     ) -> Dict[str, Any]:
         """Provides a paginated list of recipes with optional filtering.
 
@@ -345,12 +374,16 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             tags: Filter by tag SLUGS or UUIDs (e.g., ["quick", "healthy"]).
             require_all_tags: If True, recipe must have ALL specified tags (AND). Default False (OR).
             require_all_categories: If True, recipe must have ALL specified categories (AND).
+            concise: Return only id, name, slug, tag names, and totalTime per recipe
+                (default). Tag names are not filter slugs. Set False for the full
+                Mealie recipe summaries including tag, category, and tool objects.
 
         Returns:
-            Dict[str, Any]: Recipe summaries with details like ID, name, description, and image information.
+            Dict[str, Any]: Pagination info (page, perPage, total, totalPages) and
+                recipe items, concise by default or full summaries when concise=False.
         """
         with tool_error_boundary("Error fetching recipes"):
-            return mealie.get_recipes(
+            result = mealie.get_recipes(
                 search=search,
                 page=page,
                 per_page=per_page,
@@ -359,6 +392,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 require_all_tags=require_all_tags,
                 require_all_categories=require_all_categories,
             )
+            return _concise_recipe_page(result) if concise else result
 
     @mcp.tool()
     def get_recipe(slug: str, concise: bool = False) -> Dict[str, Any]:

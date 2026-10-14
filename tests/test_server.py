@@ -341,7 +341,7 @@ def test_main_health_failure_raises_before_http_runner(load_server, monkeypatch)
 
 
 async def call_over_http(app, user_headers, sessions=2):
-    """Open MCP sessions over streamable HTTP and call get_recipes in each."""
+    """Initialize over streamable HTTP and call get_recipes, once per session."""
     results = []
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -368,7 +368,7 @@ async def call_over_http(app, user_headers, sessions=2):
             )
             assert response.status_code == 200
             assert '"name":"mealie"' in response.text
-            headers["Mcp-Session-Id"] = response.headers["mcp-session-id"]
+            assert "mcp-session-id" not in response.headers
             response = await client.post(
                 "/mcp",
                 headers=headers,
@@ -436,6 +436,38 @@ async def test_http_sessions_act_as_the_gateway_user(http_app, monkeypatch, enab
     assert paths(requests).count("/api/app/about") == 1
     assert factory.call_count == 2
     assert clients.is_closed
+
+
+async def test_http_calls_without_a_live_session_succeed(http_app):
+    # After a redeploy, clients keep sending the session ID of the old process.
+    app, _, requests, _ = http_app()
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://127.0.0.1:8765",
+        ) as client:
+            response = await client.post(
+                "/mcp",
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Mcp-Session-Id": "session-from-before-restart",
+                    "X-User": "alice",
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "get_recipes", "arguments": {}},
+                },
+            )
+    assert response.status_code == 200
+    event = next(
+        line[6:] for line in response.text.splitlines() if line.startswith("data: ")
+    )
+    assert json.loads(event)["result"].get("isError") is not True
+    assert [r.headers["authorization"] for r in requests if r.url.path == "/api/recipes"] == [
+        "Bearer user-token"
+    ]
 
 
 async def test_each_gateway_user_gets_their_own_token(http_app):

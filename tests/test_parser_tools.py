@@ -310,3 +310,20 @@ async def test_malformed_food_list_is_reported_on_the_line(invoke, foods):
 
     assert out["suggestion"]["status"] == "error"
     assert "unexpected food list" in out["suggestion"]["error"]
+
+
+async def test_compound_match_stays_a_suggestion(invoke, fetcher):
+    fetcher.foods = [
+        catalogue_food("d0000000-0000-4000-8000-000000000007", "selderij"),
+        catalogue_food("d0000000-0000-4000-8000-000000000008", "knolselderij"),
+    ]
+    parser_returns(fetcher, parse_result("1 stengel bleekselderij", "stengel bleekselderij", 1))
+    [out] = await invoke("parse_ingredients", ingredients=["1 stengel bleekselderij"])
+
+    assert out["food"] == {"id": None, "name": "stengel bleekselderij"}
+    assert "resolved" not in out
+    assert out["suggestion"]["suggestion"]["action"] == "alias"
+    assert [c["name"] for c in out["suggestion"]["candidates"]] == [
+        "selderij",
+        "knolselderij",
+    ]

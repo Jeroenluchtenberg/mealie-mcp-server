@@ -88,14 +88,19 @@ def register_resolve_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         (which already holds the pass-1 result). Run it in two passes:
 
         1. action "suggest" (default, no writes): compares the text with every
-           existing food name, plural, and alias, as a whole, by word, and by
-           similarity, and returns ranked candidates plus a suggestion:
+           existing food name, plural, and alias, as a whole and word by word,
+           by equality, similarity, and compound suffix, and returns ranked
+           candidates plus a suggestion:
            - use: an existing food already matches; link it directly.
            - use_with_note: an existing food appears inside the text, e.g.
              "stengel bleekselderij" -> food "bleekselderij" with note
              "stengel", or "zout naar smaak" -> "zout" with note "naar smaak".
              Link that food and keep the rest as the note; no alias is needed.
-           - alias: a near-identical food exists (plural form, typo).
+           - alias: a near-identical food exists (plural form, typo), or a
+             word ends in an existing food name ("bleekselderij" ->
+             "selderij"). alias holds the matched words and note any others.
+             Check the candidates first: the prefix can make it a different
+             ingredient (knolselderij).
            - create: nothing similar exists.
         2. Apply the decision: action "alias" with food_id adds the text as an
            alias, so the parser matches it from then on; action "create" makes a

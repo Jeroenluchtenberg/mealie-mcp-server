@@ -128,7 +128,8 @@ def register_parser_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
           use_with_note (an existing food appears inside the text, e.g.
           "zout naar smaak" -> "zout" with note "naar smaak"; check it is the
           same ingredient: "zoete aardappel" is not "aardappel"), alias (a
-          near-identical food, such as a plural or typo), or create (nothing
+          near-identical food, such as a plural or typo, or a compound ending
+          in a food name: "bleekselderij" -> "selderij"), or create (nothing
           similar). candidates lists the closest existing foods.
         A suggestion is not applied. Confirm it with the user or decide
         between the candidates, then link the food or apply the alias or

@@ -532,10 +532,12 @@ resolve_ingredients(items=[
 
 The default `suggest` action only reads. It loads the food catalogue once per
 call and compares each text with every food name, plural, and alias: as a
-whole, word by word, and by similarity. Mealie's own search only finds
+whole and word by word, by similarity, and as a Dutch compound suffix
+(`bleekselderij` ends in `selderij`). Mealie's own search only finds
 substrings, so it would miss `laurierbladeren` → `laurierblad`. It suggests `use` (an exact
 match), `use_with_note` (an existing food appears in the text; the remaining
-words become the note), `alias` (a near-identical name), or `create`. The
+words become the note), `alias` (a near-identical name or a compound ending in
+one; check the candidates, since `knolselderij` is not `selderij`), or `create`. The
 `alias` action makes the parser match the text from then on. `create` returns
 `exists` instead of making a duplicate, and `alias` returns `conflict` when
 another food already owns that name.

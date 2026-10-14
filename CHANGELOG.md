@@ -45,6 +45,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `resolve_ingredients` resolves food text the parser could not match. Its
+  read-only `suggest` pass ranks existing foods (exact, contained word, or
+  similar name) and suggests `use`, `use_with_note`, `alias`, or `create`. The
+  `alias` and `create` actions apply that choice. They return `exists` or
+  `conflict` instead of creating duplicate foods or ambiguous aliases. HTTP 403
+  is reported as a missing "can organize group data" permission, and the
+  remaining writes are skipped.
+- `parse_ingredients` normalizes decimal commas (`0,25 tl`) before parsing.
 - `create_recipe` and `update_recipe` accept a `nutrition` argument covering
   Mealie's full key set (calories, macros, cholesterol, sodium, sugars, and the
   fat breakdown). Numbers are converted to the strings Mealie stores. Mealie

@@ -454,6 +454,24 @@ def _favorite_recipes(
     return recipes
 
 
+def recipe_page_result(
+    mealie: MealieFetcher,
+    page: Any,
+    concise: bool,
+    households: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Any:
+    """Shape a recipe list page the way get_recipes returns it.
+
+    The household lookup is skipped for full output and empty pages, and reused
+    when the caller already fetched it.
+    """
+    if not concise:
+        return page
+    if households is None and isinstance(page, dict) and page.get("items"):
+        households = _households_by_id(mealie)
+    return _concise_recipe_page(page, households)
+
+
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
     """Register all recipe-related tools with the MCP server."""
 
@@ -521,15 +539,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 require_all_categories=require_all_categories,
                 households=household_ids,
             )
-            if not concise:
-                return result
-            if (
-                known_households is None
-                and isinstance(result, dict)
-                and result.get("items")
-            ):
-                known_households = _households_by_id(mealie)
-            return _concise_recipe_page(result, known_households)
+            return recipe_page_result(mealie, result, concise, known_households)
 
     @mcp.tool()
     def get_favorite_recipes(
@@ -583,11 +593,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 "totalPages": math.ceil(len(recipes) / per_page),
                 "items": recipes[start : start + per_page],
             }
-            if not concise:
-                return result
-            if known_households is None and result["items"]:
-                known_households = _households_by_id(mealie)
-            return _concise_recipe_page(result, known_households)
+            return recipe_page_result(mealie, result, concise, known_households)
 
     @mcp.tool()
     def get_recipe(slug: str, concise: bool = False) -> Dict[str, Any]:

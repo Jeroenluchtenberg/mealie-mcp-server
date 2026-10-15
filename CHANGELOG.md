@@ -49,6 +49,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `get_cookbooks` lists the caller's household cookbooks ordered by position,
+  concise by default. `get_cookbook_recipes` lists a cookbook's recipes by slug
+  or id in the same shape as `get_recipes`, with search and pagination. Unknown
+  cookbooks return an error that names the available cookbooks.
+
 - `get_favorite_recipes` lists the current user's favorite recipes, sorted by
   name, with the same `concise`, `households`, and pagination envelope as
   `get_recipes`. Favorites of deleted recipes are left out.

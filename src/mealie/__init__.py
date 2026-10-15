@@ -1,5 +1,6 @@
 from .categories import CategoriesMixin
 from .client import MealieClient
+from .cookbooks import CookbooksMixin
 from .foods import FoodsMixin
 from .group import GroupMixin
 from .mealplan import MealplanMixin
@@ -16,6 +17,7 @@ class MealieFetcher(
     RecipeMixin,
     CategoriesMixin,
     TagsMixin,
+    CookbooksMixin,
     FoodsMixin,
     UnitsMixin,
     ToolsMixin,

@@ -43,11 +43,12 @@ COOKBOOK_ITEMS = [
     _cookbook("4d2c8b1a-6e5f-4a3b-9c8d-7e6f5a4b3c14", "Desserts", "desserts", 2),
 ]
 
+# Mealie's pagination envelope uses snake_case keys.
 COOKBOOK_PAGE = {
     "page": 1,
-    "perPage": -1,
+    "per_page": -1,
     "total": len(COOKBOOK_ITEMS),
-    "totalPages": 1,
+    "total_pages": 1,
     "next": None,
     "previous": None,
     "items": COOKBOOK_ITEMS,
@@ -55,9 +56,9 @@ COOKBOOK_PAGE = {
 
 RECIPE_PAGE = {
     "page": 2,
-    "perPage": 1,
+    "per_page": 1,
     "total": 2,
-    "totalPages": 2,
+    "total_pages": 2,
     "next": None,
     "previous": "/api/recipes?page=1&perPage=1&cookbook=weeknight-dinners",
     "items": [
@@ -235,9 +236,9 @@ async def test_get_cookbook_recipes_pagination_is_passed_through(
 async def test_get_cookbook_recipes_page_past_end_is_empty(invoke, fetcher):
     fetcher.responses["GET", RECIPES] = {
         "page": 3,
-        "perPage": 1,
+        "per_page": 1,
         "total": 2,
-        "totalPages": 2,
+        "total_pages": 2,
         "next": None,
         "previous": None,
         "items": [],

@@ -384,11 +384,18 @@ def _concise_recipe_page(
     """
     if not isinstance(page, dict):
         return page
-    concise = {
-        key: page[key]
-        for key in ("page", "perPage", "total", "totalPages")
-        if key in page
-    }
+    # Mealie returns per_page and total_pages; tools report them as perPage
+    # and totalPages, which is also how get_favorite_recipes builds its page.
+    concise = {}
+    for key, aliases in (
+        ("page", ("page",)),
+        ("perPage", ("perPage", "per_page")),
+        ("total", ("total",)),
+        ("totalPages", ("totalPages", "total_pages")),
+    ):
+        source = next((alias for alias in aliases if alias in page), None)
+        if source is not None:
+            concise[key] = page[source]
     items = []
     for item in page.get("items") or []:
         summary = {

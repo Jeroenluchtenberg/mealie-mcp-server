@@ -180,3 +180,6 @@ src/openapi.json
 
 # PyPI configuration file
 .pypirc
+
+# Local dev stack tokens (dev/seed.py)
+dev/tokens.json

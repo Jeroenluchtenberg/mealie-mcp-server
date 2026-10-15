@@ -9,6 +9,7 @@ from mealie import MealieFetcher
 from mealie.client import MealieApiError
 from models.mealplan import MealPlanEntry
 from tools.errors import tool_error_boundary
+from tools.pagination import page_result
 
 
 def register_mealplan_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -30,14 +31,16 @@ def register_mealplan_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             per_page: Number of items per page
 
         Returns:
-            Dict[str, Any]: JSON response containing mealplan items and pagination information
+            Dict[str, Any]: Meal plan entries under items, with page, perPage, total, and totalPages
         """
         with tool_error_boundary("Error fetching mealplans"):
-            return mealie.get_mealplans(
-                start_date=start_date,
-                end_date=end_date,
-                page=page,
-                per_page=per_page,
+            return page_result(
+                mealie.get_mealplans(
+                    start_date=start_date,
+                    end_date=end_date,
+                    page=page,
+                    per_page=per_page,
+                )
             )
 
     @mcp.tool()

@@ -219,8 +219,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 
 ### Recipe Tools (13 operations)
 
-- `get_recipes` - List/search recipes with advanced filtering
-- `get_favorite_recipes` - List the current user's favorite recipes
+- `get_recipes` - List/search recipes with advanced filtering and sorting by
+  name, rating, date added, or last made
+- `get_favorite_recipes` - List the current user's favorite recipes, or with
+  `scope="household"` the merged favorites of everyone in their household
 - `get_recipe` - Get complete recipe details, or a summary with `concise=true`
 - `create_recipe` - Create a recipe; name and instructions are required (`[]`
   for a recipe without steps), with optional ingredients, metadata, nutrition,
@@ -240,8 +242,8 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 ### Cookbook Tools (2 operations)
 
 - `get_cookbooks` - List the household's cookbooks, ordered by position
-- `get_cookbook_recipes` - List a cookbook's recipes by cookbook slug or id,
-  with search and pagination
+- `get_cookbook_recipes` - List a cookbook's recipes by cookbook id, slug, or
+  name, with search, sorting, and pagination
 
 ### Shopping List Tools (15 operations)
 
@@ -435,8 +437,9 @@ uv run python dev/call.py admin get_cookbooks '{"concise": true}'
 docker compose down -v              # remove containers and data
 ```
 
-The seed script is safe to rerun. It creates `admin` (household `family`) and
-`neighbour` (household `neighbours`), and writes their Mealie API tokens to
+The seed script is safe to rerun. It creates `admin` and `partner` (household
+`family`) and `neighbour` (household `neighbours`), with favorites and ratings
+for each, and writes their Mealie API tokens to
 the gitignored `dev/tokens.json`. The stub serves those tokens to the server.
 [`dev/call.py`](dev/call.py) sends the username in `X-User`, as the gateway
 would. Mealie's UI is at `http://127.0.0.1:9925` (`changeme@example.com` /
@@ -505,12 +508,31 @@ are already scoped to the caller's household.
 ### Cookbooks
 
 Cookbooks are household-scoped saved filters. `get_cookbooks` lists the
-caller's household cookbooks; pass a cookbook's slug or id to
-`get_cookbook_recipes`, and Mealie applies the cookbook's filter server-side:
+caller's household cookbooks as `{"items": [...], "total": n}`; pass a
+cookbook's id, slug, or display name to `get_cookbook_recipes`, and Mealie
+applies the cookbook's filter server-side:
 
 ```python
-get_cookbook_recipes(cookbook="weeknight-dinners", search="pasta")
+get_cookbook_recipes(cookbook="Weeknight Dinners", search="pasta")
 ```
+
+### Pagination, Ratings, and Sorting
+
+Every paginated tool returns `page`, `perPage`, `total`, `totalPages`, and
+`items`. Recipe lists carry `rating`, the recipe-level rating Mealie keeps, and
+`userRating`, the caller's own rating; both are `null` when unset.
+
+`get_recipes`, `get_favorite_recipes`, and `get_cookbook_recipes` take
+`order_by` (`name`, `rating`, `date_added`, or `last_made`) and
+`order_direction` (`asc` or `desc`). Mealie does the sorting: `rating` uses
+the caller's own rating where set, otherwise the recipe rating, and unrated
+recipes sort last. Without `order_by`, results sort by name, except with a
+`search`, which keeps Mealie's relevance order.
+
+`get_favorite_recipes(scope="household")` merges the favorites of everyone in
+the caller's household, adds `favoritedBy` and `favoriteCount`, and sorts by
+`favoriteCount` unless `order_by` is given. It costs one Mealie request for the
+member list plus one per member.
 
 ### Nutrition Is Replaced, Not Merged
 

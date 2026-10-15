@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mealie import MealieFetcher
 from tools.errors import tool_error_boundary
+from tools.pagination import page_result
 
 
 def register_categories_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -21,10 +22,10 @@ def register_categories_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             per_page: Number of items per page
 
         Returns:
-            Dict[str, Any]: Categories with pagination information
+            Dict[str, Any]: Categories under items, with page, perPage, total, and totalPages
         """
         with tool_error_boundary("Error fetching categories"):
-            return mealie.get_categories(page=page, per_page=per_page)
+            return page_result(mealie.get_categories(page=page, per_page=per_page))
 
     @mcp.tool()
     def get_empty_categories() -> List[Dict[str, Any]]:

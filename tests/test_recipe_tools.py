@@ -242,9 +242,10 @@ async def test_get_recipe_preserves_full_response(invoke, fetcher, arguments):
     fetcher.recipe["futureField"] = {"nested": [1, None]}
     fetcher.recipe["recipeInstructions"] = [{"text": "Cook."}]
     result = await invoke("get_recipe", slug="test-recipe", **arguments)
-    assert result == fetcher.recipe
+    assert result == {**fetcher.recipe, "userRating": None}
     assert [(r["method"], r["url"]) for r in fetcher.requests] == [
-        ("GET", "/api/recipes/test-recipe")
+        ("GET", "/api/recipes/test-recipe"),
+        ("GET", "/api/users/self/ratings"),
     ]
 
 
@@ -1033,6 +1034,8 @@ async def test_get_recipes_is_concise_by_default(invoke, fetcher):
                 "slug": "stamppot",
                 "tags": ["Quick"],
                 "totalTime": "45 min",
+                "rating": None,
+                "userRating": None,
                 "household": "luchtenberg",
             },
             {
@@ -1040,6 +1043,8 @@ async def test_get_recipes_is_concise_by_default(invoke, fetcher):
                 "name": "Soep",
                 "slug": "soep",
                 "tags": [],
+                "rating": None,
+                "userRating": None,
                 "household": "neighbours",
             },
         ],
@@ -1057,6 +1062,7 @@ async def test_get_recipes_without_households_is_unfiltered(invoke, fetcher):
     assert "households" not in fetcher.last("GET", url_contains="/api/recipes")["params"]
     assert _calls(fetcher) == [
         ("GET", "/api/recipes"),
+        ("GET", "/api/users/self/ratings"),
         ("GET", "/api/groups/households"),
     ]
     assert fetcher.last("GET", url_contains="/api/groups")["params"] == {"perPage": -1}
@@ -1065,8 +1071,17 @@ async def test_get_recipes_without_households_is_unfiltered(invoke, fetcher):
 async def test_get_recipes_full_response_skips_household_lookup(invoke, fetcher):
     fetcher.responses["GET", "/api/recipes"] = RECIPE_PAGE
     out = await invoke("get_recipes", concise=False)
-    assert out == RECIPE_PAGE
-    assert _calls(fetcher) == [("GET", "/api/recipes")]
+    expected = deepcopy(RECIPE_PAGE)
+    for item in expected["items"]:
+        item.update(rating=None, userRating=None)
+    assert out == {
+        "page": 1,
+        "perPage": 50,
+        "total": 2,
+        "totalPages": 1,
+        "items": expected["items"],
+    }
+    assert _calls(fetcher) == [("GET", "/api/recipes"), ("GET", "/api/users/self/ratings")]
 
 
 async def test_get_recipes_empty_page_skips_household_lookup(invoke, fetcher):
@@ -1085,6 +1100,7 @@ async def test_get_recipes_self_resolves_own_household(invoke, fetcher):
         ("GET", "/api/groups/households"),
         ("GET", "/api/recipes"),
         ("GET", "/api/users/self"),
+        ("GET", "/api/users/self/ratings"),
     ]
     assert out["items"][0]["household"] == "luchtenberg"
 

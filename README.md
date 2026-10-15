@@ -422,7 +422,7 @@ built from the [`Dockerfile`](Dockerfile). Ports bind to `127.0.0.1` only. It is
 for development, not deployment; see [Docker Compose](#docker-compose) above.
 
 ```bash
-docker compose up -d --build        # rebuild after source changes
+docker compose up -d --build --wait        # rebuild after source changes
 uv run python dev/seed.py           # users, households, recipes, cookbooks
 uv run python dev/call.py admin     # list tools as the seeded admin
 uv run python dev/call.py admin get_cookbooks '{"concise": true}'

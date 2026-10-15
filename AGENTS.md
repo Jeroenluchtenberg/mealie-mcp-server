@@ -16,7 +16,7 @@
 - Install all development dependencies with `uv sync --extra dev`.
 - Before committing, run `uv run ruff check src tests dev` and `uv run pytest -q`.
 - Verify behavior against a real Mealie only with the root
-  [`docker-compose.yml`](docker-compose.yml) stack (`docker compose up -d --build`,
+  [`docker-compose.yml`](docker-compose.yml) stack (`docker compose up -d --build --wait`,
   `uv run python dev/seed.py`, `uv run python dev/call.py <user> <tool> '<json>'`,
   then `docker compose down -v`). Never probe or test deployed Mealie,
   Authentik, or gateway endpoints.

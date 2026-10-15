@@ -1,4 +1,4 @@
-"""Seed the local development Mealie with users, recipes, and cookbooks.
+"""Seed the local development Mealie with users, recipes, cookbooks, and favorites.
 
 Run after `docker compose up -d`: `uv run python dev/seed.py`. Safe to rerun.
 Writes dev/tokens.json (username -> Mealie API token) for the Authentik stub
@@ -38,6 +38,20 @@ COOKBOOKS = [
     ("Empty", 2, 'tags.name IN ["Nonexistent"]'),
 ]
 NEIGHBOUR_COOKBOOKS = [("Neighbour Bakes", 1, "")]
+# A second, non-admin member of the admin's household, for household favorites.
+PARTNER = {
+    "email": "partner@example.com",
+    "username": "partner",
+    "fullName": "Partner",
+    "password": "PartnerPassword1",
+}
+# Per user: favorites, then {recipe: rating}. Pasta Pesto gets different
+# ratings so the recipe rating (their average) differs from each user's own.
+FAVORITES = {
+    "admin": (["Stamppot", "Erwtensoep"], {"Slow Roast Lamb": 5, "Pasta Pesto": 1}),
+    "partner": (["Stamppot", "Pasta Pesto"], {"Pasta Pesto": 4, "Tomato Soup": 3}),
+    "neighbour": (["Tomato Soup"], {}),
+}
 
 
 def _check(response: httpx.Response) -> httpx.Response:
@@ -71,6 +85,7 @@ def _by_name(client: httpx.Client, path: str) -> dict:
 
 def _ensure_household_and_user(admin: httpx.Client) -> None:
     group = _check(admin.get("/api/users/self")).json()
+    partner = {**PARTNER, "group": group["group"], "household": group["household"]}
     if NEIGHBOUR["household"] not in _by_name(admin, "/api/admin/households"):
         _check(
             admin.post(
@@ -81,6 +96,23 @@ def _ensure_household_and_user(admin: httpx.Client) -> None:
     users = _check(admin.get("/api/admin/users", params={"perPage": -1})).json()["items"]
     if not any(user["username"] == NEIGHBOUR["username"] for user in users):
         _check(admin.post("/api/admin/users", json={**NEIGHBOUR, "group": group["group"]}))
+    if not any(user["username"] == PARTNER["username"] for user in users):
+        _check(admin.post("/api/admin/users", json=partner))
+
+
+def _ensure_favorites(client: httpx.Client) -> None:
+    user = _check(client.get("/api/users/self")).json()
+    favorites, ratings = FAVORITES[user["username"]]
+    recipes = _by_name(client, "/api/recipes")
+    for name in favorites:
+        _check(client.post(f"/api/users/{user['id']}/favorites/{recipes[name]['slug']}"))
+    for name, rating in ratings.items():
+        _check(
+            client.post(
+                f"/api/users/{user['id']}/ratings/{recipes[name]['slug']}",
+                json={"rating": rating},
+            )
+        )
 
 
 def _ensure_recipes(client: httpx.Client) -> None:
@@ -122,11 +154,14 @@ def main() -> None:
     admin = _login(*ADMIN)
     _ensure_household_and_user(admin)
     neighbour = _login(NEIGHBOUR["email"], NEIGHBOUR["password"])
+    partner = _login(PARTNER["email"], PARTNER["password"])
     _ensure_recipes(admin)
     _ensure_cookbooks(admin, COOKBOOKS)
     _ensure_cookbooks(neighbour, NEIGHBOUR_COOKBOOKS)
+    for client in (admin, partner, neighbour):
+        _ensure_favorites(client)
 
-    tokens = dict(_api_token(client) for client in (admin, neighbour))
+    tokens = dict(_api_token(client) for client in (admin, partner, neighbour))
     TOKENS_FILE.write_text(json.dumps(tokens, indent=2))
     TOKENS_FILE.chmod(0o644)  # read by the stub container's user
     print(f"Seeded {BASE_URL}; X-User values: {', '.join(tokens)}")

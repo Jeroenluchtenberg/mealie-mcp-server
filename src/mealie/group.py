@@ -26,3 +26,17 @@ class GroupMixin:
         return self._handle_request(
             "GET", "/api/groups/households", params={"perPage": -1}
         )
+
+    def get_group_members(self) -> Dict[str, Any]:
+        """List every user in the current user's group.
+
+        Unlike /api/households/members, this needs no manage permission.
+
+        Returns:
+            Paginated response whose items hold each user's id, username,
+            fullName, groupId, and householdId.
+        """
+        logger.info({"message": "Retrieving group members"})
+        return self._handle_request(
+            "GET", "/api/groups/members", params={"perPage": -1}
+        )

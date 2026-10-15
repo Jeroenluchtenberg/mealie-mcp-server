@@ -1,10 +1,13 @@
 """Offline coverage for the cookbook tools."""
 
+import json
 from copy import deepcopy
 
 import pytest
 from conftest import OTHER_HOUSEHOLD_ID, OWN_HOUSEHOLD_ID
 from mcp.server.fastmcp.exceptions import ToolError
+
+from mealie.client import MealieApiError
 
 COOKBOOKS = "/api/households/cookbooks"
 RECIPES = "/api/recipes"
@@ -94,7 +97,8 @@ async def test_cookbook_tools_are_registered(server):
 
 async def test_get_cookbooks_is_concise_and_ordered_by_position(invoke, fetcher):
     out = await invoke("get_cookbooks")
-    assert out == [
+    assert out["total"] == 3
+    assert out["items"] == [
         {
             "id": WEEKNIGHT_ID,
             "name": "Weeknight Dinners",
@@ -129,21 +133,33 @@ async def test_get_cookbooks_is_concise_and_ordered_by_position(invoke, fetcher)
 
 async def test_get_cookbooks_full_output_keeps_query_filter(invoke):
     out = await invoke("get_cookbooks", concise=False)
-    assert [c["slug"] for c in out] == ["weeknight-dinners", "desserts", "soups"]
-    assert out[0] == COOKBOOK_ITEMS[1]
-    assert out[0]["queryFilterString"] == 'tags.slug IN ["quick"]'
+    assert [c["slug"] for c in out["items"]] == ["weeknight-dinners", "desserts", "soups"]
+    assert out["total"] == 3
+    assert out["items"][0] == COOKBOOK_ITEMS[1]
+    assert out["items"][0]["queryFilterString"] == 'tags.slug IN ["quick"]'
 
 
 async def test_get_cookbooks_excludes_other_households(invoke, fetcher):
     fetcher.user["householdId"] = OTHER_HOUSEHOLD_ID.upper()
     out = await invoke("get_cookbooks")
-    assert [c["slug"] for c in out] == ["neighbour-bakes"]
+    assert [c["slug"] for c in out["items"]] == ["neighbour-bakes"]
 
 
-async def test_get_cookbooks_empty(invoke, fetcher):
-    fetcher.responses["GET", COOKBOOKS] = {**COOKBOOK_PAGE, "items": [], "total": 0}
-    assert await invoke("get_cookbooks") == []
-    assert await invoke("get_cookbooks", concise=False) == []
+@pytest.mark.parametrize("count", [0, 1, 2])
+@pytest.mark.parametrize("concise", [True, False])
+async def test_get_cookbooks_always_returns_an_envelope(invoke, server, fetcher, count, concise):
+    """A bare list would reach text-only clients as one block per cookbook,
+    so a single cookbook looked like a lone object."""
+    own = [c for c in COOKBOOK_ITEMS if c["householdId"] == OWN_HOUSEHOLD_ID][:count]
+    fetcher.responses["GET", COOKBOOKS] = {**COOKBOOK_PAGE, "items": own}
+    out = await invoke("get_cookbooks", concise=concise)
+    assert set(out) == {"items", "total"}
+    assert out["total"] == count
+    assert isinstance(out["items"], list) and len(out["items"]) == count
+    mcp, _ = server
+    content, _structured = await mcp.call_tool("get_cookbooks", {"concise": concise})
+    assert len(content) == 1
+    assert json.loads(content[0].text) == out
 
 
 async def test_get_cookbooks_rejects_malformed_list(invoke, fetcher):
@@ -176,7 +192,9 @@ async def test_get_cookbook_recipes_by_slug_or_id(invoke, fetcher, cookbook):
     out = await invoke("get_cookbook_recipes", cookbook=f" {cookbook} ")
     assert fetcher.last("GET", url_contains=RECIPES)["params"] == {
         "cookbook": cookbook,
-        "orderDirection": "desc",
+        "orderBy": "name",
+        "orderDirection": "asc",
+        "orderByNullPosition": "last",
     }
     assert out == {
         "page": 2,
@@ -190,18 +208,26 @@ async def test_get_cookbook_recipes_by_slug_or_id(invoke, fetcher, cookbook):
                 "slug": "stamppot",
                 "tags": ["Quick"],
                 "totalTime": "45 min",
+                "rating": None,
+                "userRating": None,
                 "household": "luchtenberg",
             }
         ],
     }
-    assert _calls(fetcher) == [("GET", RECIPES), ("GET", "/api/groups/households")]
+    assert _calls(fetcher) == [
+        ("GET", RECIPES),
+        ("GET", "/api/users/self/ratings"),
+        ("GET", "/api/groups/households"),
+    ]
 
 
 async def test_get_cookbook_recipes_matches_get_recipes_shape(invoke, fetcher):
     from_cookbook = await invoke("get_cookbook_recipes", cookbook="soups")
     assert from_cookbook == await invoke("get_recipes")
     full = await invoke("get_cookbook_recipes", cookbook="soups", concise=False)
-    assert full == RECIPE_PAGE == await invoke("get_recipes", concise=False)
+    assert full == await invoke("get_recipes", concise=False)
+    assert set(full) == {"page", "perPage", "total", "totalPages", "items"}
+    assert full["items"] == [{**RECIPE_PAGE["items"][0], "rating": None, "userRating": None}]
 
 
 async def test_get_cookbook_recipes_combines_search(invoke, fetcher):
@@ -286,3 +312,67 @@ async def test_get_cookbook_recipes_rejects_invalid_arguments(invoke):
         await invoke("get_cookbook_recipes")
     with pytest.raises(ToolError):
         await invoke("get_cookbook_recipes", cookbook="soups", concise="sometimes")
+
+
+def _cookbook_404_unless(fetcher, known):
+    """Answer cookbook keys Mealie itself resolves (ids and slugs) and 404 the rest."""
+    handle = fetcher._handle_request
+
+    def handle_request(method, url, **kwargs):
+        cookbook = (kwargs.get("params") or {}).get("cookbook")
+        if url == RECIPES and cookbook is not None and cookbook not in known:
+            fetcher.requests.append({"method": method, "url": url, "params": kwargs.get("params")})
+            raise MealieApiError(404, "cookbook not found")
+        return handle(method, url, **kwargs)
+
+    fetcher._handle_request = handle_request
+
+
+@pytest.mark.parametrize("name", ["Weeknight Dinners", "weeknight DINNERS"])
+async def test_get_cookbook_recipes_by_display_name(invoke, fetcher, name):
+    _cookbook_404_unless(fetcher, {"weeknight-dinners", WEEKNIGHT_ID})
+    out = await invoke("get_cookbook_recipes", cookbook=name)
+    recipe_requests = [r for r in fetcher.requests if r["url"] == RECIPES]
+    assert [r["params"]["cookbook"] for r in recipe_requests] == [name, "weeknight-dinners"]
+    assert out["items"][0]["name"] == "Stamppot"
+
+
+async def test_get_cookbook_recipes_name_matching_several_cookbooks(invoke, fetcher):
+    page = deepcopy(COOKBOOK_PAGE)
+    page["items"].append(
+        _cookbook("4d2c8b1a-6e5f-4a3b-9c8d-7e6f5a4b3c15", "soups", "soups-2", 4)
+    )
+    fetcher.responses["GET", COOKBOOKS] = page
+    _cookbook_404_unless(fetcher, {"soups", "soups-2"})
+    with pytest.raises(ToolError) as error:
+        await invoke("get_cookbook_recipes", cookbook="Soups ")
+    assert str(error.value).endswith(
+        "Cookbook name Soups matches several cookbooks: soups, soups-2. "
+        "Pass one of these slugs instead"
+    )
+    assert [r["params"]["cookbook"] for r in fetcher.requests if r["url"] == RECIPES] == ["Soups"]
+
+
+async def test_get_cookbook_recipes_name_of_other_household_is_unknown(invoke, fetcher):
+    _cookbook_404_unless(fetcher, {"neighbour-bakes"})
+    with pytest.raises(ToolError, match="Unknown cookbook: Neighbour Bakes. Available"):
+        await invoke("get_cookbook_recipes", cookbook="Neighbour Bakes")
+
+
+async def test_get_cookbook_recipes_sorting_is_passed_through(invoke, fetcher):
+    await invoke(
+        "get_cookbook_recipes", cookbook="soups", order_by="rating", per_page=10
+    )
+    assert fetcher.last("GET", url_contains=RECIPES)["params"] == {
+        "cookbook": "soups",
+        "perPage": 10,
+        "orderBy": "rating",
+        "orderDirection": "desc",
+        "orderByNullPosition": "last",
+    }
+
+
+async def test_get_cookbook_recipes_rejects_unknown_order(invoke, fetcher):
+    with pytest.raises(ToolError, match="Unknown order_by: stars"):
+        await invoke("get_cookbook_recipes", cookbook="soups", order_by="stars")
+    assert fetcher.requests == []

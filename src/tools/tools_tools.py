@@ -4,6 +4,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mealie import MealieFetcher
 from tools.errors import tool_error_boundary
+from tools.pagination import page_result
 
 
 def register_tools_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -29,10 +30,10 @@ def register_tools_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             per_page: Number of items per page.
 
         Returns:
-            Dict[str, Any]: Tools (under "items") with pagination information.
+            Dict[str, Any]: Tools under items, with page, perPage, total, and totalPages.
         """
         with tool_error_boundary("Error fetching tools"):
-            return mealie.get_tools(search=search, page=page, per_page=per_page)
+            return page_result(mealie.get_tools(search=search, page=page, per_page=per_page))
 
     @mcp.tool()
     def create_tool(name: str) -> Dict[str, Any]:

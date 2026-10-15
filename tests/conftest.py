@@ -136,10 +136,22 @@ class FakeFetcher(MealieFetcher):
         self.foods = None
         self.user = deepcopy(CURRENT_USER)
         self.households = deepcopy(HOUSEHOLDS)
-        # Entries of GET /api/users/self/favorites (UserRatingSummary).
+        # Entries of GET /api/users/self/favorites (UserRatingSummary); they
+        # are also the current user's favoritedBy matches in /api/recipes.
         self.favorites = []
-        # Optional recipe summaries; when set, /api/recipes honours an
-        # `id IN [...]` queryFilter and the households filter.
+        # Entries of GET /api/users/self/ratings (UserRatingSummary).
+        self.ratings = []
+        # Items of GET /api/groups/members (UserSummary); the current user only.
+        self.members = [
+            {
+                key: CURRENT_USER[key]
+                for key in ("id", "username", "fullName", "groupId", "householdId")
+            }
+        ]
+        # Other users' favorited recipe ids, by user id.
+        self.member_favorites = {}
+        # Optional recipe summaries; when set, /api/recipes honours `id IN`
+        # and favoritedBy.id queryFilters, search, and the households filter.
         self.recipe_catalogue = None
 
     def fail_on(self, url_contains, status_code=422, message="Mealie rejected it"):
@@ -174,6 +186,16 @@ class FakeFetcher(MealieFetcher):
             return deepcopy(self.user)
         if method == "GET" and url == "/api/users/self/favorites":
             return {"ratings": deepcopy(self.favorites)}
+        if method == "GET" and url == "/api/users/self/ratings":
+            return {"ratings": deepcopy(self.ratings)}
+        if method == "GET" and url == "/api/groups/members":
+            return {
+                "items": deepcopy(self.members),
+                "page": 1,
+                "per_page": -1,
+                "total": len(self.members),
+                "total_pages": 1,
+            }
         if self.recipe_catalogue is not None and method == "GET" and url == "/api/recipes":
             return self._filter_recipes(kwargs.get("params") or {})
         if method == "GET" and url == "/api/groups/households":
@@ -304,23 +326,57 @@ class FakeFetcher(MealieFetcher):
             return {"success": True, "message": "Operation completed successfully"}
         raise AssertionError(f"Unhandled fake request: {method} {url}")
 
+    def _favorited_by(self, user_id):
+        if user_id == self.user["id"]:
+            return {
+                entry["recipeId"]
+                for entry in self.favorites
+                if isinstance(entry, dict) and entry.get("isFavorite") is not False
+            }
+        return set(self.member_favorites.get(user_id, ()))
+
     def _filter_recipes(self, params):
-        """Apply an `id IN [...]` queryFilter and households, like Mealie."""
-        match = re.fullmatch(r"id IN \[(.*)\]", params.get("queryFilter") or "")
-        ids = set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
+        """Apply Mealie's filters to the catalogue.
+
+        Supports `id IN [...]`, `favoritedBy.id = "..."`, and
+        `favoritedBy.id IN [...]` queryFilters, a name-substring search, the
+        households filter, and page/perPage. Only orderBy=name is applied;
+        other orders keep catalogue order and tests assert the parameters.
+        """
+        query_filter = params.get("queryFilter") or ""
+        quoted = set(re.findall(r'"([^"]+)"', query_filter))
+        ids = None
+        if query_filter.startswith("id IN"):
+            ids = quoted
+        elif query_filter.startswith("favoritedBy.id"):
+            ids = set().union(*(self._favorited_by(user_id) for user_id in quoted))
+        search = (params.get("search") or "").casefold()
         households = {h.lower() for h in params.get("households") or []}
         items = [
             deepcopy(recipe)
             for recipe in self.recipe_catalogue
             if (ids is None or recipe["id"] in ids)
+            and search in recipe["name"].casefold()
             and (not households or recipe["householdId"].lower() in households)
         ]
+        if params.get("orderBy") == "name":
+            items.sort(
+                key=lambda recipe: recipe["name"].lower(),
+                reverse=params.get("orderDirection") == "desc",
+            )
+        page = params.get("page", 1)
+        per_page = params.get("perPage", 50)
+        total = len(items)
+        if per_page > 0:
+            items = items[(page - 1) * per_page : page * per_page]
         return {
             "items": items,
-            "page": 1,
-            "perPage": params.get("perPage", 50),
-            "total": len(items),
-            "totalPages": 1,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": 1 if per_page < 1 else -(-total // per_page),
+            "next": None,
+            "previous": None,
         }
 
     def _search_foods(self, search):

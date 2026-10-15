@@ -21,6 +21,7 @@ from models.recipe import (
     RecipeSettingsInput,
 )
 from tools.errors import tool_error_boundary
+from tools.pagination import page_result, paginate
 from tools.parser_tools import normalize_ingredient_line
 
 
@@ -373,92 +374,165 @@ def _resolve_households(
     return resolved
 
 
-def _concise_recipe_page(
-    page: Any, households: Optional[Dict[str, Dict[str, Any]]] = None
-) -> Any:
-    """Reduce a recipe list page to the fields needed to pick recipes.
+ORDER_FIELDS = ("name", "rating", "date_added", "last_made")
+
+
+def recipe_order(
+    order_by: Optional[str], order_direction: Optional[str], search: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Validate sorting into get_recipes arguments for Mealie.
+
+    Without order_by, results sort by name, except while searching, where
+    Mealie's relevance order is kept (None). Nulls always sort last, so
+    unrated or never-made recipes end up at the bottom either way.
+    """
+    if order_direction is not None:
+        order_direction = order_direction.strip().lower()
+        if order_direction not in ("asc", "desc"):
+            raise ValueError(
+                f"Unknown order_direction: {order_direction}. Use asc or desc"
+            )
+    if order_by is None:
+        if search:
+            return None
+        order_by = "name"
+    key = order_by.strip().lower()
+    if key not in ORDER_FIELDS:
+        raise ValueError(
+            f"Unknown order_by: {order_by}. Use one of: {', '.join(ORDER_FIELDS)}"
+        )
+    return {
+        "order_by": key,
+        "order_direction": order_direction or ("asc" if key == "name" else "desc"),
+        "order_by_null_position": "last",
+    }
+
+
+def _page_items(page: Any) -> List[Dict[str, Any]]:
+    items = page.get("items") if isinstance(page, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("Mealie returned an unexpected recipe list")
+    return [item for item in items if isinstance(item, dict)]
+
+
+def list_recipes(
+    mealie: MealieFetcher,
+    *,
+    search: Optional[str],
+    order: Optional[Dict[str, Any]],
+    page: Optional[int],
+    per_page: Optional[int],
+    **filters: Any,
+) -> Dict[str, Any]:
+    """Fetch one page of recipes, always sorted by Mealie itself.
+
+    Mealie ranks search matches by relevance before applying orderBy, so an
+    explicit order would only break ties. The search then only selects the
+    matches, and an unsearched listing with the same filters supplies their
+    order, keeping Mealie's own rating and last-made rules.
+    """
+    if order is None or not search:
+        return mealie.get_recipes(
+            search=search, page=page, per_page=per_page, **(order or {}), **filters
+        )
+    matches = mealie.get_recipes(search=search, per_page=-1, **filters)
+    matched = {item.get("id") for item in _page_items(matches)}
+    items: List[Dict[str, Any]] = []
+    if matched:
+        ordered = mealie.get_recipes(per_page=-1, **order, **filters)
+        items = [item for item in _page_items(ordered) if item.get("id") in matched]
+    return paginate(items, page, per_page)
+
+
+def _rating(value: Any) -> Any:
+    """Mealie stores "no rating" as either null or 0."""
+    return value or None
+
+
+def user_ratings(mealie: MealieFetcher) -> Dict[str, Any]:
+    """Fetch the caller's own ratings once, keyed by lowercase recipe id."""
+    data = mealie.get_current_user_ratings()
+    ratings = data.get("ratings") if isinstance(data, dict) else None
+    if not isinstance(ratings, list):
+        raise ValueError("Mealie returned an unexpected ratings list")
+    return {
+        str(entry["recipeId"]).lower(): _rating(entry.get("rating"))
+        for entry in ratings
+        if isinstance(entry, dict) and entry.get("recipeId") and _rating(entry.get("rating"))
+    }
+
+
+def _user_rating(recipe: Dict[str, Any], ratings: Dict[str, Any]) -> Any:
+    return ratings.get(str(recipe.get("id")).lower())
+
+
+def _concise_recipe(
+    item: Dict[str, Any],
+    households: Dict[str, Dict[str, Any]],
+    ratings: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Reduce a recipe summary to the fields needed to pick recipes.
 
     Full tag, category, and tool objects make a page of recipes very large, so
-    each item keeps only its id, name, slug, tag names, total time, and the
-    slug of the household that owns it.
+    only the id, name, slug, tag names, total time, ratings, and the slug of
+    the owning household are kept.
     """
-    if not isinstance(page, dict):
-        return page
-    # Mealie returns per_page and total_pages; tools report them as perPage
-    # and totalPages, which is also how get_favorite_recipes builds its page.
-    concise = {}
-    for key, aliases in (
-        ("page", ("page",)),
-        ("perPage", ("perPage", "per_page")),
-        ("total", ("total",)),
-        ("totalPages", ("totalPages", "total_pages")),
-    ):
-        source = next((alias for alias in aliases if alias in page), None)
-        if source is not None:
-            concise[key] = page[source]
-    items = []
-    for item in page.get("items") or []:
-        summary = {
-            "id": item.get("id"),
-            "name": item.get("name"),
-            "slug": item.get("slug"),
-            "tags": [tag.get("name") for tag in item.get("tags") or []],
-        }
-        if item.get("totalTime") is not None:
-            summary["totalTime"] = item["totalTime"]
-        household_id = item.get("householdId")
-        if household_id:
-            household = (households or {}).get(str(household_id).lower()) or {}
-            summary["household"] = household.get("slug") or household_id
-        items.append(summary)
-    concise["items"] = items
-    return concise
+    summary = {
+        "id": item.get("id"),
+        "name": item.get("name"),
+        "slug": item.get("slug"),
+        "tags": [tag.get("name") for tag in item.get("tags") or []],
+    }
+    if item.get("totalTime") is not None:
+        summary["totalTime"] = item["totalTime"]
+    summary["rating"] = _rating(item.get("rating"))
+    summary["userRating"] = _user_rating(item, ratings)
+    household_id = item.get("householdId")
+    if household_id:
+        household = households.get(str(household_id).lower()) or {}
+        summary["household"] = household.get("slug") or household_id
+    return summary
 
 
-# Each id adds about 40 characters to the queryFilter; chunking keeps the
-# request line well under common proxy limits for users with many favorites.
-_FAVORITES_PER_REQUEST = 50
+def _full_recipe(item: Dict[str, Any], ratings: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep a full summary, minus the always-zero nested recipeCount.
+
+    Mealie's summary schema reuses its organizer models, whose recipeCount is
+    only filled in on the organizer endpoints and reads 0 here.
+    """
+    recipe = dict(item)
+    for key in ("tags", "recipeCategory", "tools"):
+        if isinstance(recipe.get(key), list):
+            recipe[key] = [
+                {k: v for k, v in org.items() if k != "recipeCount"}
+                if isinstance(org, dict)
+                else org
+                for org in recipe[key]
+            ]
+    recipe["rating"] = _rating(recipe.get("rating"))
+    recipe["userRating"] = _user_rating(recipe, ratings)
+    return recipe
 
 
-def _favorite_recipe_ids(favorites: Any) -> List[str]:
-    """Extract the unique favorited recipe ids from Mealie's ratings response."""
-    ratings = favorites.get("ratings") if isinstance(favorites, dict) else None
-    if not isinstance(ratings, list):
-        raise ValueError("Mealie returned an unexpected favorites list")
-    ids: Dict[str, None] = {}
-    for entry in ratings:
-        if not isinstance(entry, dict) or entry.get("isFavorite") is False:
-            continue
-        try:
-            # Only well-formed UUIDs are interpolated into the query filter.
-            ids[str(uuid.UUID(str(entry.get("recipeId"))))] = None
-        except ValueError:
-            continue
-    return list(ids)
-
-
-def _favorite_recipes(
-    mealie: MealieFetcher, recipe_ids: List[str], household_ids: Optional[List[str]]
+def recipe_items(
+    mealie: MealieFetcher,
+    items: List[Dict[str, Any]],
+    concise: bool,
+    households: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Resolve favorited ids to recipe summaries, sorted by name.
+    """Shape recipe summaries the way the recipe list tools return them.
 
-    Ids of deleted recipes simply do not match the filter, so they drop out.
+    The ratings and household lookups are skipped for empty lists, and the
+    household lookup is reused when the caller already fetched it.
     """
-    recipes: List[Dict[str, Any]] = []
-    for start in range(0, len(recipe_ids), _FAVORITES_PER_REQUEST):
-        chunk = recipe_ids[start : start + _FAVORITES_PER_REQUEST]
-        quoted = ", ".join(f'"{recipe_id}"' for recipe_id in chunk)
-        result = mealie.get_recipes(
-            query_filter=f"id IN [{quoted}]", per_page=-1, households=household_ids
-        )
-        items = result.get("items") if isinstance(result, dict) else None
-        if not isinstance(items, list):
-            raise ValueError("Mealie returned an unexpected recipe list")
-        recipes.extend(item for item in items if isinstance(item, dict))
-    recipes.sort(
-        key=lambda recipe: (str(recipe.get("name") or "").casefold(), str(recipe.get("id")))
-    )
-    return recipes
+    if not items:
+        return []
+    ratings = user_ratings(mealie)
+    if not concise:
+        return [_full_recipe(item, ratings) for item in items]
+    if households is None:
+        households = _households_by_id(mealie)
+    return [_concise_recipe(item, households, ratings) for item in items]
 
 
 def recipe_page_result(
@@ -466,17 +540,77 @@ def recipe_page_result(
     page: Any,
     concise: bool,
     households: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Any:
-    """Shape a recipe list page the way get_recipes returns it.
+) -> Dict[str, Any]:
+    """Shape a recipe list page the way get_recipes returns it."""
+    return page_result(
+        page, recipe_items(mealie, _page_items(page), concise, households)
+    )
 
-    The household lookup is skipped for full output and empty pages, and reused
-    when the caller already fetched it.
+
+def _uuid(value: Any, label: str) -> str:
+    """Only well-formed UUIDs are interpolated into a query filter."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except ValueError:
+        raise ValueError(f"Mealie returned an invalid {label} id") from None
+
+
+def _favorites_filter(user_ids: List[str]) -> str:
+    """Mealie's own favorites page filters recipes on favoritedBy.id."""
+    quoted = [f'"{user_id}"' for user_id in user_ids]
+    if len(quoted) == 1:
+        return f"favoritedBy.id = {quoted[0]}"
+    return f"favoritedBy.id IN [{', '.join(quoted)}]"
+
+
+def _household_members(mealie: MealieFetcher) -> List[Dict[str, Any]]:
+    """The caller's household members (the caller included), by username.
+
+    /api/households/members needs the manage permission, so the group's
+    member list is narrowed to the caller's household instead.
     """
-    if not concise:
-        return page
-    if households is None and isinstance(page, dict) and page.get("items"):
-        households = _households_by_id(mealie)
-    return _concise_recipe_page(page, households)
+    own = mealie.get_current_user().get("householdId")
+    if not own:
+        raise ValueError("Mealie did not report your household")
+    page = mealie.get_group_members()
+    items = page.get("items") if isinstance(page, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("Mealie returned an unexpected member list")
+    members = [
+        member
+        for member in items
+        if isinstance(member, dict)
+        and str(member.get("householdId") or "").lower() == str(own).lower()
+    ]
+    return sorted(members, key=lambda member: str(member.get("username") or ""))
+
+
+def _household_favorites(
+    mealie: MealieFetcher, household_ids: Optional[List[str]]
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, List[str]], List[str]]:
+    """Collect each household member's favorites with one request per member.
+
+    Returns the merged recipes by id, the usernames that favorited each id,
+    and the ids of the members that have at least one favorite.
+    """
+    recipes: Dict[str, Dict[str, Any]] = {}
+    favorited_by: Dict[str, List[str]] = {}
+    fans: List[str] = []
+    for member in _household_members(mealie):
+        member_id = _uuid(member.get("id"), "user")
+        page = mealie.get_recipes(
+            query_filter=_favorites_filter([member_id]),
+            per_page=-1,
+            households=household_ids,
+        )
+        items = _page_items(page)
+        if items:
+            fans.append(member_id)
+        for item in items:
+            recipe_id = str(item.get("id"))
+            recipes.setdefault(recipe_id, item)
+            favorited_by.setdefault(recipe_id, []).append(str(member.get("username")))
+    return recipes, favorited_by, fans
 
 
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -493,8 +627,10 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         require_all_categories: Optional[bool] = None,
         households: Optional[List[str]] = None,
         concise: bool = True,
+        order_by: Optional[str] = None,
+        order_direction: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Provides a paginated list of recipes with optional filtering.
+        """Provides a paginated list of recipes with optional filtering and sorting.
 
         Recipes are shared across every household in the Mealie group, so
         without a households filter the results include all households' recipes.
@@ -510,7 +646,9 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         Use get_tags() or get_categories() first to find the correct slugs.
 
         Args:
-            search: Filters recipes by name or description.
+            search: Filters recipes by name, description, or ingredients.
+                Without order_by, matches are ordered by relevance (closest
+                name match first); an explicit order_by sorts them instead.
             page: Page number for pagination.
             per_page: Number of items per page.
             categories: Filter by category SLUGS (e.g., ["breakfast", "dinner"]).
@@ -519,16 +657,26 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             require_all_categories: If True, recipe must have ALL specified categories (AND).
             households: Filter by household ids or slugs (OR). Use "self" for the
                 caller's own household. Unknown households raise an error.
-            concise: Return only id, name, slug, tag names, totalTime, and the
-                owning household's slug per recipe (default). Tag names are not
-                filter slugs. Set False for the full Mealie recipe summaries
-                including tag, category, and tool objects.
+            concise: Return only id, name, slug, tag names, totalTime, rating,
+                userRating, and the owning household's slug per recipe
+                (default). Tag names are not filter slugs. Set False for the
+                full Mealie recipe summaries including tag, category, and tool
+                objects, plus userRating.
+            order_by: name (default unless searching), rating, date_added, or
+                last_made. order_by="rating" sorts by your own rating where
+                you set one, otherwise by the recipe rating; unrated recipes
+                sort last. last_made uses your household's last-made date;
+                never-made recipes sort last.
+            order_direction: asc or desc. Defaults to asc for name and desc
+                for rating, date_added, and last_made.
 
         Returns:
-            Dict[str, Any]: Pagination info (page, perPage, total, totalPages) and
-                recipe items, concise by default or full summaries when concise=False.
+            Dict[str, Any]: page, perPage, total, totalPages, and items. Each
+                item's rating is the recipe-level rating (null when unrated);
+                userRating is the caller's own rating, or null.
         """
         with tool_error_boundary("Error fetching recipes"):
+            order = recipe_order(order_by, order_direction, search)
             known_households = None
             household_ids = None
             if households:
@@ -536,8 +684,10 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 household_ids = _resolve_households(
                     mealie, households, known_households
                 )
-            result = mealie.get_recipes(
+            result = list_recipes(
+                mealie,
                 search=search,
+                order=order,
                 page=page,
                 per_page=per_page,
                 categories=categories,
@@ -554,35 +704,60 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
         per_page: int = 50,
         households: Optional[List[str]] = None,
         concise: bool = True,
+        scope: str = "user",
+        order_by: Optional[str] = None,
+        order_direction: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """List the recipes the current user has marked as favorite.
+        """List favorite recipes: the caller's own, or their whole household's.
 
-        Read-only. Favorites are per user, not per household: each user has
-        their own. Use this tool when the user asks for "my favorites",
-        "favorite recipes", or recipes they starred; get_recipes does not know
-        about favorites. Results are sorted by name, and favorites whose recipe
-        was deleted are left out.
+        Read-only. Favorites are per user; get_recipes does not know about them.
+        Favorites whose recipe was deleted are left out.
+
+        - scope="user" (default): the caller's own favorites. Use for
+          "my favorites", "favorite recipes", or recipes they starred. Sorted
+          by name unless order_by is given.
+        - scope="household": every recipe favorited by at least one member of
+          the caller's household (the caller included), merged without
+          duplicates. Use for "our favorites", "my family's favorites", or
+          household meal planning. Each item adds favoritedBy (the usernames
+          of the members who favorited it) and favoriteCount (how many did).
+          Sorted by favoriteCount, most first, then name, unless order_by is
+          given. Pagination runs over the full merged list.
 
         Args:
             page: Page number, starting at 1.
             per_page: Number of recipes per page (at least 1).
             households: Keep only favorites owned by these household ids or
-                slugs (OR). Use "self" for the caller's own household. Unknown
-                households raise an error.
-            concise: Return only id, name, slug, tag names, totalTime, and the
-                owning household's slug per recipe (default). Set False for the
-                full Mealie recipe summaries including tag, category, and tool
-                objects.
+                slugs (OR), in either scope. Use "self" for the caller's own
+                household. Unknown households raise an error.
+            concise: Return only id, name, slug, tag names, totalTime, rating,
+                userRating, and the owning household's slug per recipe
+                (default). Set False for the full Mealie recipe summaries
+                including tag, category, and tool objects, plus userRating.
+            scope: "user" or "household".
+            order_by: name, rating, date_added, or last_made. order_by="rating"
+                sorts by your own rating where you set one, otherwise by the
+                recipe rating; unrated recipes sort last. last_made uses your
+                household's last-made date; never-made recipes sort last.
+            order_direction: asc or desc. Defaults to asc for name and desc
+                for rating, date_added, and last_made.
 
         Returns:
-            Dict[str, Any]: Pagination info (page, perPage, total, totalPages) and
-                recipe items, concise by default or full summaries when concise=False.
+            Dict[str, Any]: page, perPage, total, totalPages, and items. Each
+                item's rating is the recipe-level rating (null when unrated);
+                userRating is the caller's own rating, or null.
         """
         with tool_error_boundary("Error fetching favorite recipes"):
             if page < 1:
                 raise ValueError("page must be at least 1")
             if per_page < 1:
                 raise ValueError("per_page must be at least 1")
+            scope_key = scope.strip().lower()
+            if scope_key not in ("user", "household"):
+                raise ValueError(f"Unknown scope: {scope}. Use user or household")
+            explicit_order = order_by is not None
+            # Without a search there is always an order.
+            order = recipe_order(order_by, order_direction, None) or {}
             known_households = None
             household_ids = None
             if households:
@@ -590,17 +765,45 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 household_ids = _resolve_households(
                     mealie, households, known_households
                 )
-            recipe_ids = _favorite_recipe_ids(mealie.get_current_user_favorites())
-            recipes = _favorite_recipes(mealie, recipe_ids, household_ids)
-            start = (page - 1) * per_page
-            result = {
-                "page": page,
-                "perPage": per_page,
-                "total": len(recipes),
-                "totalPages": math.ceil(len(recipes) / per_page),
-                "items": recipes[start : start + per_page],
-            }
-            return recipe_page_result(mealie, result, concise, known_households)
+            if scope_key == "user":
+                own_id = _uuid(mealie.get_current_user().get("id"), "user")
+                result = mealie.get_recipes(
+                    query_filter=_favorites_filter([own_id]),
+                    page=page,
+                    per_page=per_page,
+                    households=household_ids,
+                    **order,
+                )
+                return recipe_page_result(mealie, result, concise, known_households)
+
+            recipes, favorited_by, fans = _household_favorites(mealie, household_ids)
+            if explicit_order and fans:
+                # Mealie sorts and pages the merged favorites itself, so the
+                # rating and last-made rules match get_recipes exactly.
+                result = mealie.get_recipes(
+                    query_filter=_favorites_filter(fans),
+                    page=page,
+                    per_page=per_page,
+                    households=household_ids,
+                    **order,
+                )
+            else:
+                merged = sorted(
+                    recipes.values(),
+                    key=lambda recipe: (
+                        -len(favorited_by[str(recipe.get("id"))]),
+                        str(recipe.get("name") or "").casefold(),
+                        str(recipe.get("id")),
+                    ),
+                )
+                result = paginate(merged, page, per_page)
+            page_items = _page_items(result)
+            items = recipe_items(mealie, page_items, concise, known_households)
+            for source, item in zip(page_items, items):
+                fans_of = favorited_by.get(str(source.get("id")), [])
+                item["favoritedBy"] = fans_of
+                item["favoriteCount"] = len(fans_of)
+            return page_result(result, items)
 
     @mcp.tool()
     def get_recipe(slug: str, concise: bool = False) -> Dict[str, Any]:
@@ -614,13 +817,16 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
 
         Returns:
             Dict[str, Any]: Full recipe details by default, or a concise summary.
+                Both include rating (the recipe-level rating, null when unrated)
+                and userRating (the caller's own rating, or null).
         """
         with tool_error_boundary("Error fetching recipe"):
             recipe_json = mealie.get_recipe(slug)
+            user_rating = _user_rating(recipe_json, user_ratings(mealie))
             if not concise:
-                return recipe_json
+                return {**recipe_json, "userRating": user_rating}
             recipe = Recipe.model_validate(recipe_json)
-            return recipe.model_dump(
+            summary = recipe.model_dump(
                 include={
                     "name",
                     "slug",
@@ -628,7 +834,6 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                     "recipeYieldQuantity",
                     "recipeYield",
                     "totalTime",
-                    "rating",
                     "orgURL",
                     "tags",
                     "tools",
@@ -637,6 +842,11 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 },
                 exclude_none=True,
             )
+            return {
+                **summary,
+                "rating": _rating(recipe.rating),
+                "userRating": user_rating,
+            }
 
     @mcp.tool()
     def import_recipe_from_url(

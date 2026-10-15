@@ -5,6 +5,7 @@ from mcp.server.fastmcp import FastMCP
 from mealie import MealieFetcher
 from models.shopping_list import ShoppingListItemCreate, ShoppingListItemUpdate
 from tools.errors import tool_error_boundary
+from tools.pagination import page_result
 
 
 def register_shopping_list_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -24,10 +25,10 @@ def register_shopping_list_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             per_page: Number of items per page
 
         Returns:
-            Dict[str, Any]: Shopping lists with pagination information
+            Dict[str, Any]: Shopping lists under items, with page, perPage, total, and totalPages
         """
         with tool_error_boundary("Error fetching shopping lists"):
-            return mealie.get_shopping_lists(page=page, per_page=per_page)
+            return page_result(mealie.get_shopping_lists(page=page, per_page=per_page))
 
     @mcp.tool()
     def create_shopping_list(name: str) -> Dict[str, Any]:
@@ -136,11 +137,13 @@ def register_shopping_list_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             search: Search term to filter items
 
         Returns:
-            Dict[str, Any]: Shopping list items with pagination information
+            Dict[str, Any]: Shopping list items under items, with page, perPage, total, and totalPages
         """
         with tool_error_boundary("Error fetching shopping list items"):
-            return mealie.get_shopping_list_items(
-                page=page, per_page=per_page, search=search
+            return page_result(
+                mealie.get_shopping_list_items(
+                    page=page, per_page=per_page, search=search
+                )
             )
 
     @mcp.tool()

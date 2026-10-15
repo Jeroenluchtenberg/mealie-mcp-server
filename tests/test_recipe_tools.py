@@ -979,11 +979,12 @@ async def test_malformed_parse_response_is_rejected(invoke, fetcher):
     assert all(r["method"] != "PUT" for r in fetcher.requests)
 
 
+# Mealie's pagination envelope uses snake_case keys.
 RECIPE_PAGE = {
     "page": 1,
-    "perPage": 50,
+    "per_page": 50,
     "total": 2,
-    "totalPages": 1,
+    "total_pages": 1,
     "next": None,
     "previous": None,
     "items": [

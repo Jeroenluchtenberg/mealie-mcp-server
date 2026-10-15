@@ -236,6 +236,12 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 - `update_recipe_categories_and_tags` - Replace or clear categories, tags, or both using IDs
 - `delete_recipe` - Delete recipe
 
+### Cookbook Tools (2 operations)
+
+- `get_cookbooks` - List the household's cookbooks, ordered by position
+- `get_cookbook_recipes` - List a cookbook's recipes by cookbook slug or id,
+  with search and pagination
+
 ### Shopping List Tools (15 operations)
 
 - `get_shopping_lists` - List all shopping lists
@@ -315,10 +321,10 @@ See [Usage Examples](USAGE_EXAMPLES.md) for detailed workflows and troubleshooti
 
 - `whoami` - Show the current user's username, household, and group
 
-**Total: 64 tools**
+**Total: 66 tools**
 
 With `MEALIE_ENABLE_AI_IMPORT=true`, `import_recipe_with_ai` adds one optional
-recipe operation: **65 total tools, including 14 recipe tools**. It is absent
+recipe operation: **67 total tools, including 14 recipe tools**. It is absent
 from discovery and cannot be called when disabled.
 
 ### Migrating consolidated tools (breaking change)
@@ -481,6 +487,16 @@ get_recipes(households=["self"])
 Unknown households return an error rather than an unfiltered list. Concise
 results include each recipe's `household` slug. Meal plans and shopping lists
 are already scoped to the caller's household.
+
+### Cookbooks
+
+Cookbooks are household-scoped saved filters. `get_cookbooks` lists the
+caller's household cookbooks; pass a cookbook's slug or id to
+`get_cookbook_recipes`, and Mealie applies the cookbook's filter server-side:
+
+```python
+get_cookbook_recipes(cookbook="weeknight-dinners", search="pasta")
+```
 
 ### Nutrition Is Replaced, Not Merged
 

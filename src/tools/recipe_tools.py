@@ -384,11 +384,18 @@ def _concise_recipe_page(
     """
     if not isinstance(page, dict):
         return page
-    concise = {
-        key: page[key]
-        for key in ("page", "perPage", "total", "totalPages")
-        if key in page
-    }
+    # Mealie returns per_page and total_pages; tools report them as perPage
+    # and totalPages, which is also how get_favorite_recipes builds its page.
+    concise = {}
+    for key, aliases in (
+        ("page", ("page",)),
+        ("perPage", ("perPage", "per_page")),
+        ("total", ("total",)),
+        ("totalPages", ("totalPages", "total_pages")),
+    ):
+        source = next((alias for alias in aliases if alias in page), None)
+        if source is not None:
+            concise[key] = page[source]
     items = []
     for item in page.get("items") or []:
         summary = {
@@ -452,6 +459,24 @@ def _favorite_recipes(
         key=lambda recipe: (str(recipe.get("name") or "").casefold(), str(recipe.get("id")))
     )
     return recipes
+
+
+def recipe_page_result(
+    mealie: MealieFetcher,
+    page: Any,
+    concise: bool,
+    households: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Any:
+    """Shape a recipe list page the way get_recipes returns it.
+
+    The household lookup is skipped for full output and empty pages, and reused
+    when the caller already fetched it.
+    """
+    if not concise:
+        return page
+    if households is None and isinstance(page, dict) and page.get("items"):
+        households = _households_by_id(mealie)
+    return _concise_recipe_page(page, households)
 
 
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
@@ -521,15 +546,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 require_all_categories=require_all_categories,
                 households=household_ids,
             )
-            if not concise:
-                return result
-            if (
-                known_households is None
-                and isinstance(result, dict)
-                and result.get("items")
-            ):
-                known_households = _households_by_id(mealie)
-            return _concise_recipe_page(result, known_households)
+            return recipe_page_result(mealie, result, concise, known_households)
 
     @mcp.tool()
     def get_favorite_recipes(
@@ -583,11 +600,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 "totalPages": math.ceil(len(recipes) / per_page),
                 "items": recipes[start : start + per_page],
             }
-            if not concise:
-                return result
-            if known_households is None and result["items"]:
-                known_households = _households_by_id(mealie)
-            return _concise_recipe_page(result, known_households)
+            return recipe_page_result(mealie, result, concise, known_households)
 
     @mcp.tool()
     def get_recipe(slug: str, concise: bool = False) -> Dict[str, Any]:

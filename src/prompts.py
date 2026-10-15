@@ -21,6 +21,7 @@ You have access to a Mealie recipe database with various recipes. You can search
 
 ### Recipe Tools
 - get_recipes: Search and list recipes (always set per_page=50. Use null if empty values). Returns id, name, slug, tag names, and totalTime per recipe by default; use get_recipe for details. Pass households=["self"] when the user asks for recipes from their own household
+- get_favorite_recipes: List the current user's favorite recipes (same concise output as get_recipes). Use it when the user asks for their favorites
 - whoami: Show the current user's household and group
 - get_recipe: Use concise=true for basic recipe details by default; use concise=false for full information only when the user asks for it
 

@@ -15,3 +15,13 @@ class UserMixin:
         """
         logger.info({"message": "Retrieving current user information"})
         return self._handle_request("GET", "/api/users/self")
+
+    def get_current_user_favorites(self) -> Dict[str, Any]:
+        """Get the recipes the currently logged in user has favorited.
+
+        Returns:
+            Dictionary with a "ratings" list; each entry holds recipeId, rating,
+            and isFavorite. Recipe details are not included.
+        """
+        logger.info({"message": "Retrieving current user favorites"})
+        return self._handle_request("GET", "/api/users/self/favorites")

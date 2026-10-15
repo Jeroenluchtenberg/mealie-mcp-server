@@ -408,6 +408,52 @@ def _concise_recipe_page(
     return concise
 
 
+# Each id adds about 40 characters to the queryFilter; chunking keeps the
+# request line well under common proxy limits for users with many favorites.
+_FAVORITES_PER_REQUEST = 50
+
+
+def _favorite_recipe_ids(favorites: Any) -> List[str]:
+    """Extract the unique favorited recipe ids from Mealie's ratings response."""
+    ratings = favorites.get("ratings") if isinstance(favorites, dict) else None
+    if not isinstance(ratings, list):
+        raise ValueError("Mealie returned an unexpected favorites list")
+    ids: Dict[str, None] = {}
+    for entry in ratings:
+        if not isinstance(entry, dict) or entry.get("isFavorite") is False:
+            continue
+        try:
+            # Only well-formed UUIDs are interpolated into the query filter.
+            ids[str(uuid.UUID(str(entry.get("recipeId"))))] = None
+        except ValueError:
+            continue
+    return list(ids)
+
+
+def _favorite_recipes(
+    mealie: MealieFetcher, recipe_ids: List[str], household_ids: Optional[List[str]]
+) -> List[Dict[str, Any]]:
+    """Resolve favorited ids to recipe summaries, sorted by name.
+
+    Ids of deleted recipes simply do not match the filter, so they drop out.
+    """
+    recipes: List[Dict[str, Any]] = []
+    for start in range(0, len(recipe_ids), _FAVORITES_PER_REQUEST):
+        chunk = recipe_ids[start : start + _FAVORITES_PER_REQUEST]
+        quoted = ", ".join(f'"{recipe_id}"' for recipe_id in chunk)
+        result = mealie.get_recipes(
+            query_filter=f"id IN [{quoted}]", per_page=-1, households=household_ids
+        )
+        items = result.get("items") if isinstance(result, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("Mealie returned an unexpected recipe list")
+        recipes.extend(item for item in items if isinstance(item, dict))
+    recipes.sort(
+        key=lambda recipe: (str(recipe.get("name") or "").casefold(), str(recipe.get("id")))
+    )
+    return recipes
+
+
 def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
     """Register all recipe-related tools with the MCP server."""
 
@@ -482,6 +528,64 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 and isinstance(result, dict)
                 and result.get("items")
             ):
+                known_households = _households_by_id(mealie)
+            return _concise_recipe_page(result, known_households)
+
+    @mcp.tool()
+    def get_favorite_recipes(
+        page: int = 1,
+        per_page: int = 50,
+        households: Optional[List[str]] = None,
+        concise: bool = True,
+    ) -> Dict[str, Any]:
+        """List the recipes the current user has marked as favorite.
+
+        Read-only. Favorites are per user, not per household: each user has
+        their own. Use this tool when the user asks for "my favorites",
+        "favorite recipes", or recipes they starred; get_recipes does not know
+        about favorites. Results are sorted by name, and favorites whose recipe
+        was deleted are left out.
+
+        Args:
+            page: Page number, starting at 1.
+            per_page: Number of recipes per page (at least 1).
+            households: Keep only favorites owned by these household ids or
+                slugs (OR). Use "self" for the caller's own household. Unknown
+                households raise an error.
+            concise: Return only id, name, slug, tag names, totalTime, and the
+                owning household's slug per recipe (default). Set False for the
+                full Mealie recipe summaries including tag, category, and tool
+                objects.
+
+        Returns:
+            Dict[str, Any]: Pagination info (page, perPage, total, totalPages) and
+                recipe items, concise by default or full summaries when concise=False.
+        """
+        with tool_error_boundary("Error fetching favorite recipes"):
+            if page < 1:
+                raise ValueError("page must be at least 1")
+            if per_page < 1:
+                raise ValueError("per_page must be at least 1")
+            known_households = None
+            household_ids = None
+            if households:
+                known_households = _households_by_id(mealie)
+                household_ids = _resolve_households(
+                    mealie, households, known_households
+                )
+            recipe_ids = _favorite_recipe_ids(mealie.get_current_user_favorites())
+            recipes = _favorite_recipes(mealie, recipe_ids, household_ids)
+            start = (page - 1) * per_page
+            result = {
+                "page": page,
+                "perPage": per_page,
+                "total": len(recipes),
+                "totalPages": math.ceil(len(recipes) / per_page),
+                "items": recipes[start : start + per_page],
+            }
+            if not concise:
+                return result
+            if known_households is None and result["items"]:
                 known_households = _households_by_id(mealie)
             return _concise_recipe_page(result, known_households)
 

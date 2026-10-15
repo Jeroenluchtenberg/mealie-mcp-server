@@ -49,6 +49,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `get_favorite_recipes` lists the current user's favorite recipes, sorted by
+  name, with the same `concise`, `households`, and pagination envelope as
+  `get_recipes`. Favorites of deleted recipes are left out.
 - `get_recipes` accepts `households` (ids, slugs, or `"self"` for the caller's
   own household). Unknown households return an error instead of an unfiltered
   list. Concise results include each recipe's `household` slug.

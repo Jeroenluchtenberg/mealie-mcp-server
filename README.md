@@ -170,7 +170,8 @@ docker build -t mealie-mcp-server .
 
 ### Docker Compose
 
-Put the server on an internal network shared only with the gateway and Mealie.
+The repository's `docker-compose.yml` is a local test stack (see
+[Local Development Stack](#local-development-stack)). For deployment, put the server on an internal network shared only with the gateway and Mealie.
 Do not publish its port. Set `AUTHENTIK_TOKEN` in the shell or the Compose `.env`
 file.
 
@@ -418,18 +419,30 @@ cd mealie-mcp-server
 uv sync --locked --extra dev
 ```
 
-For manual testing against a real instance, fill in `.env` and start the server:
+### Local Development Stack
+
+The root [`docker-compose.yml`](docker-compose.yml) runs a throwaway test
+environment: Mealie (`MEALIE_VERSION`, default `v3.28.0`), a minimal Authentik
+stand-in ([`dev/authentik_stub.py`](dev/authentik_stub.py)), and this server
+built from the [`Dockerfile`](Dockerfile). Ports bind to `127.0.0.1` only. It is
+for development, not deployment; see [Docker Compose](#docker-compose) above.
 
 ```bash
-cp .env.template .env
-# Edit .env with your Mealie and Authentik details
-uv run mealie-mcp-server
+docker compose up -d --build --wait        # rebuild after source changes
+uv run python dev/seed.py           # users, households, recipes, cookbooks
+uv run python dev/call.py admin     # list tools as the seeded admin
+uv run python dev/call.py admin get_cookbooks '{"concise": true}'
+docker compose down -v              # remove containers and data
 ```
 
-Connect the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
-to `http://127.0.0.1:8765/mcp` with Streamable HTTP and add an `X-User` header
-for a user that has a linked token. Only do this on a loopback address: without
-the gateway, the header is not verified.
+The seed script is safe to rerun. It creates `admin` (household `family`) and
+`neighbour` (household `neighbours`), and writes their Mealie API tokens to
+the gitignored `dev/tokens.json`. The stub serves those tokens to the server.
+[`dev/call.py`](dev/call.py) sends the username in `X-User`, as the gateway
+would. Mealie's UI is at `http://127.0.0.1:9925` (`changeme@example.com` /
+`MyPassword`). You can also connect the
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) to
+`http://127.0.0.1:8765/mcp` with an `X-User` header.
 
 Run the offline checks; these do not require a Mealie instance or credentials:
 
@@ -449,13 +462,14 @@ uv run pytest -q
 | [`src/identity.py`](src/identity.py) | Per-request user identity and Authentik token lookup |
 | [`src/prompts.py`](src/prompts.py) | MCP prompts |
 | [`tests/`](tests/) | Offline tests and fixtures |
+| [`dev/`](dev/) | Local development stack: Authentik stub, seed, and MCP client scripts |
 
 Repository conventions are in [AGENTS.md](AGENTS.md), with focused guidance for
 [source code](src/AGENTS.md) and [tests](tests/AGENTS.md).
 
 The automated suite uses fake HTTP responses and includes local HTTP-transport
-checks. It does not replace compatibility testing against your deployed Mealie
-version.
+checks. Use the local development stack, with `MEALIE_VERSION` set to your
+Mealie release, to check behavior against a real Mealie.
 
 ## Important Notes
 

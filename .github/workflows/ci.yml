@@ -16,5 +16,5 @@ jobs:
         with:
           python-version-file: .python-version
       - run: uv sync --locked --extra dev
-      - run: uv run ruff check src tests
+      - run: uv run ruff check src tests dev
       - run: uv run pytest -q
